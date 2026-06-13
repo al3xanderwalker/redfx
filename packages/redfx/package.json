@@ -1,0 +1,49 @@
+{
+  "name": "redfx",
+  "version": "0.1.0",
+  "description": "Ergonomic Effect-native Redis core: typed commands, Schema-typed keys, pub/sub as Stream, Lua scripts, over a driver-agnostic send-level port.",
+  "license": "MIT",
+  "author": "Alex Walker",
+  "homepage": "https://github.com/al3xanderwalker/redfx",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/al3xanderwalker/redfx.git",
+    "directory": "packages/redfx"
+  },
+  "keywords": [
+    "effect",
+    "redis",
+    "effect-ts",
+    "stream",
+    "schema",
+    "typescript"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "effect": "^3.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "effect": "^3.21.3",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,9 @@
+packages:
+  - packages/*
+
+# testcontainers' optional SSH transport deps; we talk to the local Docker socket, so no native builds needed.
+allowBuilds:
+  "@biomejs/biome": true
+  cpu-features: false
+  protobufjs: false
+  ssh2: false

@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["bun", "node"],
+    "baseUrl": ".",
+    "paths": {
+      "redfx": ["packages/redfx/src/index.ts"],
+      "redfx-ioredis": ["packages/redfx-ioredis/src/index.ts"],
+      "redfx-bun": ["packages/redfx-bun/src/index.ts"]
+    }
+  },
+  "include": ["packages/*/src/**/*.ts", "test/**/*.ts", "examples/**/*.ts"]
+}
