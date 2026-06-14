@@ -1,7 +1,11 @@
 # redfx
 
-Ergonomic Redis for [Effect](https://effect.website): typed commands, Schema-typed keys, pub/sub as
-a `Stream`, and distributed caching, over a small driver-agnostic port.
+[![npm](https://img.shields.io/npm/v/@redfx/core.svg)](https://www.npmjs.com/package/@redfx/core)
+[![CI](https://github.com/al3xanderwalker/redfx/actions/workflows/ci.yml/badge.svg)](https://github.com/al3xanderwalker/redfx/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/@redfx/core.svg)](LICENSE)
+
+Ergonomic Redis for [Effect](https://effect.website): typed commands, Schema-typed keys, pub/sub and
+streams as a `Stream`, and distributed caching, over a small driver-agnostic port.
 
 ```ts
 import { Redis } from "@redfx/core"
