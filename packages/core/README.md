@@ -1,4 +1,4 @@
-# redfx
+# @redfx/core
 
 Core of [redfx](https://github.com/al3xanderwalker/redfx): ergonomic Redis for Effect. Typed
 commands (`Option` reads, `Duration` TTLs, errors in the channel), Schema-typed keys (`Redis.ref`),
@@ -8,12 +8,12 @@ invalidation), all over a small driver-agnostic `send`-level port.
 
 `effect` is the only dependency. Pair it with a driver adapter:
 
-- [`redfx-ioredis`](https://www.npmjs.com/package/redfx-ioredis) for Node
-- [`redfx-bun`](https://www.npmjs.com/package/redfx-bun) for Bun
+- [`@redfx/ioredis`](https://www.npmjs.com/package/@redfx/ioredis) for Node
+- [`@redfx/bun`](https://www.npmjs.com/package/@redfx/bun) for Bun
 
 ```ts
-import { Redis } from "redfx"
-import { IoRedis } from "redfx-ioredis"
+import { Redis } from "@redfx/core"
+import { IoRedis } from "@redfx/ioredis"
 import { Config, Duration, Effect } from "effect"
 
 const program = Effect.gen(function* () {

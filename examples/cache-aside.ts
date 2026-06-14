@@ -1,10 +1,9 @@
 // Distributed cache-aside: a read-through `get` checks Redis, computes on a miss via `lookup`,
-// stores the result, and serves it warm next time. Type-checked in CI (see tsconfig `include`),
-// not run — the `declare const` origin stands in for your DB/HTTP call.
+// stores the result, and serves it warm next time.
 
+import { RedisCache } from "@redfx/core";
+import { IoRedis } from "@redfx/ioredis";
 import { Config, Duration, Effect, Schema } from "effect";
-import { RedisCache } from "redfx";
-import { IoRedis } from "redfx-ioredis";
 
 const User = Schema.Struct({
   id: Schema.String,

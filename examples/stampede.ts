@@ -1,10 +1,10 @@
 // Stampede protection: when a cold or expired hot key is hit by many requests at once, exactly one
 // `lookup` runs (behind a cross-instance Redis lock) while the rest jitter-poll and read the value
-// it stores. Type-checked in CI, not run — `fetchQuote` stands in for your origin call.
+// it stores.
 
+import { RedisCache } from "@redfx/core";
+import { IoRedis } from "@redfx/ioredis";
 import { Config, Duration, Effect, Schema } from "effect";
-import { RedisCache } from "redfx";
-import { IoRedis } from "redfx-ioredis";
 
 const Quote = Schema.Struct({ symbol: Schema.String, priceMinor: Schema.Number });
 declare const fetchQuote: (symbol: string) => Effect.Effect<typeof Quote.Type>;

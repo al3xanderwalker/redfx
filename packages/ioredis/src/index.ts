@@ -1,4 +1,16 @@
 import {
+  CommandError,
+  ConnectionError,
+  type ConnectionService,
+  layerConnection,
+  type PushMessage,
+  pooledConnection,
+  type Redis,
+  type RedisCommand,
+  type RedisError,
+  type RespValue,
+} from "@redfx/core";
+import {
   type Config,
   type ConfigError,
   type Duration,
@@ -15,18 +27,6 @@ import {
   Redis as IORedisClient,
   type RedisOptions,
 } from "ioredis";
-import {
-  CommandError,
-  ConnectionError,
-  type ConnectionService,
-  layerConnection,
-  type PushMessage,
-  pooledConnection,
-  type Redis,
-  type RedisCommand,
-  type RedisError,
-  type RespValue,
-} from "redfx";
 
 // Redis and Cluster share the surface the port drives, so both run the same connection logic.
 type RedisLike = IORedisClient | Cluster;
@@ -48,11 +48,21 @@ const DEFAULTS: RedisOptions = {
   lazyConnect: true,
   maxRetriesPerRequest: 3,
   retryStrategy: (times) => (times > 5 ? null : Math.min(times * 100, 2000)),
+  keepAlive: 30_000, // surface a silently-dead peer so a blocking read fails instead of hanging
+};
+
+// The consumer Stream owns reconnection (Stream.retry), so disable ioredis's own recovery: a dropped
+// XREAD must fail fast with a ConnectionError, not be silently reconnected and resent under us.
+const DEDICATED_OVERRIDES: RedisOptions = {
+  retryStrategy: () => null,
+  autoResendUnfulfilledCommands: false,
+  enableOfflineQueue: false,
+  maxRetriesPerRequest: 0,
 };
 
 const CLUSTER_DEFAULTS: ClusterOptions = {
   lazyConnect: true,
-  redisOptions: { maxRetriesPerRequest: 3 },
+  redisOptions: { maxRetriesPerRequest: 3, keepAlive: 30_000 },
 };
 
 const CONNECTION_CODES = new Set([
@@ -111,6 +121,11 @@ const makeClient = (
     }),
     closeQuietly,
   );
+
+const makeDedicatedClient = (
+  config: ClientConfig,
+): Effect.Effect<IORedisClient, ConnectionError, Scope.Scope> =>
+  makeClient({ ...config, options: { ...config.options, ...DEDICATED_OVERRIDES } });
 
 const makeClusterClient = (
   config: ClusterConfig,
@@ -174,8 +189,30 @@ const subscribeStream =
       }),
     );
 
+const dedicatedStream =
+  (
+    acquire: Effect.Effect<RedisLike, ConnectionError, Scope.Scope>,
+  ): ConnectionService["dedicated"] =>
+  (f) =>
+    Stream.unwrapScoped(
+      Effect.gen(function* () {
+        const client = yield* acquire;
+        // Force the socket down first (LIFO) so a blocking read aborts at once, not after quit() waits it out.
+        yield* Effect.addFinalizer(() => Effect.sync(() => client.disconnect()));
+        return f({
+          send: send(client),
+          pipeline: pipeline(client),
+          subscribe: subscribeStream(acquire),
+          dedicated: dedicatedStream(acquire),
+          close: closeQuietly(client),
+        });
+      }),
+    );
+
 const makeConnection = (
   acquire: Effect.Effect<RedisLike, ConnectionError, Scope.Scope>,
+  // Defaults to `acquire` (cluster reuses its own client); single-node layers pass a fail-fast one.
+  dedicatedAcquire: Effect.Effect<RedisLike, ConnectionError, Scope.Scope> = acquire,
 ): Effect.Effect<ConnectionService, ConnectionError, Scope.Scope> =>
   Effect.gen(function* () {
     const client = yield* acquire;
@@ -183,13 +220,16 @@ const makeConnection = (
       send: send(client),
       pipeline: pipeline(client),
       subscribe: subscribeStream(acquire),
+      dedicated: dedicatedStream(dedicatedAcquire),
       close: closeQuietly(client),
     } satisfies ConnectionService;
   });
 
 export namespace IoRedis {
   export const layer = (config: ClientConfig = {}): Layer.Layer<Redis, ConnectionError> =>
-    layerConnection(makeConnection(makeClient(config)), { commandTimeout: config.commandTimeout });
+    layerConnection(makeConnection(makeClient(config), makeDedicatedClient(config)), {
+      commandTimeout: config.commandTimeout,
+    });
 
   export const layerConfig = (
     url: Config.Config<string>,
@@ -203,7 +243,12 @@ export namespace IoRedis {
   ): Layer.Layer<Redis, ConnectionError> => {
     const acquire = makeClient(config);
     return layerConnection(
-      pooledConnection(makeConnection(acquire), config.size, subscribeStream(acquire)),
+      pooledConnection(
+        makeConnection(acquire),
+        config.size,
+        subscribeStream(acquire),
+        dedicatedStream(makeDedicatedClient(config)),
+      ),
       { commandTimeout: config.commandTimeout },
     );
   };

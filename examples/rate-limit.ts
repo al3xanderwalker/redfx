@@ -1,10 +1,10 @@
 // Fail open, precisely: a fixed-window rate limiter. Because `RedisError` is a tagged union, we can
 // fail OPEN on a lost connection (don't lock everyone out when Redis is down) while a real bug like
-// WRONGTYPE still surfaces. Type-checked in CI (see tsconfig `include`), not run.
+// WRONGTYPE still surfaces.
 
+import { Redis } from "@redfx/core";
+import { IoRedis } from "@redfx/ioredis";
 import { Config, Duration, Effect, Option } from "effect";
-import { Redis } from "redfx";
-import { IoRedis } from "redfx-ioredis";
 
 const rateLimit = (key: string, limit: number, window: Duration.Duration) =>
   Effect.gen(function* () {

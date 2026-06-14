@@ -1,5 +1,5 @@
+import { IoRedis } from "@redfx/ioredis";
 import { Config } from "effect";
-import { IoRedis } from "redfx-ioredis";
 import { runConformance } from "./suite.js";
 
 runConformance({

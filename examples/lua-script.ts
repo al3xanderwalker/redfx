@@ -1,10 +1,10 @@
 // Lua scripts: `Redis.script` runs EVALSHA and falls back to SCRIPT LOAD automatically on NOSCRIPT,
 // caching the SHA per instance. `numkeys` is taken from the keys array, so one script can take a
-// varying number of keys, and the result is decoded with a Schema. Type-checked in CI, not run.
+// varying number of keys, and the result is decoded with a Schema.
 
+import { Redis } from "@redfx/core";
+import { IoRedis } from "@redfx/ioredis";
 import { Config, Effect, Schema } from "effect";
-import { Redis } from "redfx";
-import { IoRedis } from "redfx-ioredis";
 
 // Release a lock only if we still hold it — a compare-and-delete that returns 1 on success, 0 if the
 // token no longer matches (someone else's lock, or ours already expired).

@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { Cause, Duration, Effect, Exit, Option, Ref, Stream } from "effect";
 import {
   ConnectionError,
   type ConnectionService,
@@ -7,7 +6,8 @@ import {
   pooledConnection,
   Redis,
   type RedisError,
-} from "redfx";
+} from "@redfx/core";
+import { Cause, Duration, Effect, Exit, Option, Ref, Stream } from "effect";
 
 // A fake in-memory driver, so these can inject failures the real adapters won't produce on cue.
 
@@ -19,6 +19,7 @@ test("commandTimeout fails a slow command with TimeoutError", async () => {
     send: () => Effect.never,
     pipeline: () => Effect.never,
     subscribe: () => Stream.empty,
+    dedicated: () => Stream.empty,
     close: Effect.void,
   };
   const layer = layerConnection(Effect.succeed(stalled), { commandTimeout: Duration.millis(50) });
@@ -46,10 +47,18 @@ test("pool invalidates a connection that fails with ConnectionError", async () =
             ),
           pipeline: () => Effect.succeed([]),
           subscribe: () => Stream.empty,
+          dedicated: () => Stream.empty,
           close: Effect.void,
         } satisfies ConnectionService;
       });
-      const layer = layerConnection(pooledConnection(makeOne, 1, () => Stream.empty));
+      const layer = layerConnection(
+        pooledConnection(
+          makeOne,
+          1,
+          () => Stream.empty,
+          () => Stream.empty,
+        ),
+      );
       yield* Effect.provide(
         Effect.gen(function* () {
           const redis = yield* Redis;

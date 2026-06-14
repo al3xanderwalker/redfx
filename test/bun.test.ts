@@ -1,5 +1,5 @@
+import { BunRedis } from "@redfx/bun";
 import { Config } from "effect";
-import { BunRedis } from "redfx-bun";
 import { runConformance } from "./suite.js";
 
 runConformance({

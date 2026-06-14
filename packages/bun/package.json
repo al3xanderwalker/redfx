@@ -1,19 +1,19 @@
 {
-  "name": "redfx-ioredis",
-  "version": "0.1.0",
-  "description": "ioredis driver adapter for redfx: the send-level port over ioredis.sendCommand, with pooling and pub/sub.",
+  "name": "@redfx/bun",
+  "version": "1.0.0",
+  "description": "Bun driver adapter for redfx: the send-level port over Bun's native RedisClient, with pub/sub as a Stream.",
   "license": "MIT",
   "author": "Alex Walker",
   "homepage": "https://github.com/al3xanderwalker/redfx",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/al3xanderwalker/redfx.git",
-    "directory": "packages/redfx-ioredis"
+    "directory": "packages/bun"
   },
   "keywords": [
     "effect",
     "redis",
-    "ioredis",
+    "bun",
     "effect-ts"
   ],
   "type": "module",
@@ -38,13 +38,15 @@
   },
   "peerDependencies": {
     "effect": "^3.21.0",
-    "ioredis": "^5.0.0",
-    "redfx": "workspace:^"
+    "@redfx/core": "workspace:^"
   },
   "devDependencies": {
+    "@types/bun": "^1.2.0",
     "effect": "^3.21.3",
-    "ioredis": "^5.11.0",
-    "redfx": "workspace:*",
+    "@redfx/core": "workspace:*",
     "typescript": "^5.9.3"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

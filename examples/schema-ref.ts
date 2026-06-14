@@ -1,10 +1,10 @@
 // Schema-typed keys: `Redis.ref` ties a key prefix to a Schema, folding in encode/decode and TTL.
 // You get `Option` reads with typed decode errors instead of `JSON.parse(await redis.get(key))`,
-// manual null checks, and the raw "KEEPTTL" argument. Type-checked in CI, not run.
+// manual null checks, and the raw "KEEPTTL" argument.
 
+import { Redis } from "@redfx/core";
+import { IoRedis } from "@redfx/ioredis";
 import { Config, Duration, Effect, Schema } from "effect";
-import { Redis } from "redfx";
-import { IoRedis } from "redfx-ioredis";
 
 const OtpRecord = Schema.Struct({ codeHash: Schema.String, attempts: Schema.Number });
 const otp = Redis.ref(OtpRecord, { prefix: "otp", ttl: Duration.minutes(15) });

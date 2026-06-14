@@ -1,10 +1,10 @@
 // Two-tier cache: an in-process L1 (nanosecond, per-instance) in front of the Redis L2 (shared,
 // durable), kept coherent across instances by pub/sub invalidation. `makeTiered` is a *scoped*
-// Effect — it forks the listener fiber. Type-checked in CI, not run.
+// Effect — it forks the listener fiber.
 
+import { RedisCache } from "@redfx/core";
+import { IoRedis } from "@redfx/ioredis";
 import { Duration, Effect, Schema } from "effect";
-import { RedisCache } from "redfx";
-import { IoRedis } from "redfx-ioredis";
 
 const Flags = Schema.Record({ key: Schema.String, value: Schema.Boolean });
 declare const loadFlags: (tenant: string) => Effect.Effect<typeof Flags.Type>;

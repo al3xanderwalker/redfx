@@ -5,9 +5,9 @@
     "types": ["bun", "node"],
     "baseUrl": ".",
     "paths": {
-      "redfx": ["packages/redfx/src/index.ts"],
-      "redfx-ioredis": ["packages/redfx-ioredis/src/index.ts"],
-      "redfx-bun": ["packages/redfx-bun/src/index.ts"]
+      "@redfx/core": ["packages/core/src/index.ts"],
+      "@redfx/ioredis": ["packages/ioredis/src/index.ts"],
+      "@redfx/bun": ["packages/bun/src/index.ts"]
     }
   },
   "include": ["packages/*/src/**/*.ts", "test/**/*.ts", "examples/**/*.ts"]

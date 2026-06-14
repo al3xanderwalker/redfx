@@ -1,5 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
+  Cmd,
+  CommandError,
+  Redis,
+  RedisCache,
+  type RedisError,
+  type RedisService,
+} from "@redfx/core";
+import {
   Cause,
   Chunk,
   type ConfigError,
@@ -15,7 +23,6 @@ import {
   Schema,
   Stream,
 } from "effect";
-import { Cmd, CommandError, Redis, RedisCache, type RedisError, type RedisService } from "redfx";
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers";
 
 // Run against every adapter, so parity proves the ergonomic layer is driver-agnostic.
@@ -637,6 +644,717 @@ export const runConformance = (adapter: ConformanceAdapter) => {
       expect(result.warmA).toBe(1);
       expect(result.warmB).toBe(1);
       expect(result.afterInvalidate).toBeGreaterThanOrEqual(2);
+    });
+
+    test("hash: hset / hget / hgetAll / hdel / hexists / hincrBy / hlen / hkeys / hvals / hmget", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          const added = yield* redis.hset("h:profile", { name: "ada", age: "36" });
+          const name = yield* redis.hget("h:profile", "name");
+          const missing = yield* redis.hget("h:profile", "nope");
+          const all = yield* redis.hgetAll("h:profile");
+          const exists = yield* redis.hexists("h:profile", "name");
+          const bumped = yield* redis.hincrBy("h:profile", "age", 1);
+          const len = yield* redis.hlen("h:profile");
+          const keys = yield* redis.hkeys("h:profile");
+          const vals = yield* redis.hvals("h:profile");
+          const fetched = yield* redis.hmget("h:profile", "name", "nope");
+          const removed = yield* redis.hdel("h:profile", "name");
+          return { added, name, missing, all, exists, bumped, len, keys, vals, fetched, removed };
+        }),
+      );
+      expect(result.added).toBe(2);
+      expect(result.name).toEqual(Option.some("ada"));
+      expect(Option.isNone(result.missing)).toBe(true);
+      expect(result.all).toEqual({ name: "ada", age: "36" });
+      expect(result.exists).toBe(true);
+      expect(result.bumped).toBe(37);
+      expect(result.len).toBe(2);
+      expect([...result.keys].sort()).toEqual(["age", "name"]);
+      expect([...result.vals].sort()).toEqual(["37", "ada"]);
+      expect(result.fetched).toEqual([Option.some("ada"), Option.none()]);
+      expect(result.removed).toBe(1);
+    });
+
+    test("set: sadd / smembers / sismember / scard / srem / spop", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          const added = yield* redis.sadd("s:tags", "a", "b", "c");
+          const dup = yield* redis.sadd("s:tags", "a");
+          const members = yield* redis.smembers("s:tags");
+          const isMember = yield* redis.sismember("s:tags", "b");
+          const notMember = yield* redis.sismember("s:tags", "z");
+          const card = yield* redis.scard("s:tags");
+          const removed = yield* redis.srem("s:tags", "a");
+          const popped = yield* redis.spop("s:tags");
+          return { added, dup, members, isMember, notMember, card, removed, popped };
+        }),
+      );
+      expect(result.added).toBe(3);
+      expect(result.dup).toBe(0);
+      expect([...result.members].sort()).toEqual(["a", "b", "c"]);
+      expect(result.isMember).toBe(true);
+      expect(result.notMember).toBe(false);
+      expect(result.card).toBe(3);
+      expect(result.removed).toBe(1);
+      expect(Option.isSome(result.popped)).toBe(true);
+    });
+
+    test("zset: zadd / zscore / zincrBy / zcard / zrank / zrem", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          const added = yield* redis.zadd("z:board", [
+            [1, "a"],
+            [2, "b"],
+            [3, "c"],
+          ]);
+          const score = yield* redis.zscore("z:board", "b");
+          const missingScore = yield* redis.zscore("z:board", "z");
+          const incr = yield* redis.zincrBy("z:board", 5, "a");
+          const card = yield* redis.zcard("z:board");
+          const rank = yield* redis.zrank("z:board", "b"); // b(2) is lowest score → rank 0
+          const missingRank = yield* redis.zrank("z:board", "z");
+          const removed = yield* redis.zrem("z:board", "c");
+          return { added, score, missingScore, incr, card, rank, missingRank, removed };
+        }),
+      );
+      expect(result.added).toBe(3);
+      expect(result.score).toEqual(Option.some(2));
+      expect(Option.isNone(result.missingScore)).toBe(true);
+      expect(result.incr).toBe(6);
+      expect(result.card).toBe(3);
+      expect(result.rank).toEqual(Option.some(0));
+      expect(Option.isNone(result.missingRank)).toBe(true);
+      expect(result.removed).toBe(1);
+    });
+
+    // Forcing function: HGETALL is a flat array on RESP2 (ioredis) and a map object on RESP3 (Bun).
+    test("hgetAll normalizes RESP2 array and RESP3 map to the same Record", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("h:norm");
+          yield* redis.hset("h:norm", { f1: "v1", f2: "v2", f3: "v3" });
+          return yield* redis.hgetAll("h:norm");
+        }),
+      );
+      expect(result).toEqual({ f1: "v1", f2: "v2", f3: "v3" });
+    });
+
+    test("zrange / zrangeWithScores preserve order and scores across RESP2/RESP3", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("z:scores");
+          yield* redis.zadd("z:scores", [
+            [2, "b"],
+            [1, "a"],
+            [3, "c"],
+          ]);
+          const range = yield* redis.zrange("z:scores", 0, -1);
+          const withScores = yield* redis.zrangeWithScores("z:scores", 0, -1);
+          return { range, withScores };
+        }),
+      );
+      expect(result.range).toEqual(["a", "b", "c"]);
+      expect(result.withScores).toEqual([
+        ["a", 1],
+        ["b", 2],
+        ["c", 3],
+      ]);
+    });
+
+    test("zset scores round-trip Infinity via formatScore / decodeFloat", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("z:inf");
+          yield* redis.zadd("z:inf", [
+            [Number.POSITIVE_INFINITY, "hi"],
+            [Number.NEGATIVE_INFINITY, "lo"],
+          ]);
+          const hi = yield* redis.zscore("z:inf", "hi");
+          const lo = yield* redis.zscore("z:inf", "lo");
+          return { hi, lo };
+        }),
+      );
+      expect(result.hi).toEqual(Option.some(Number.POSITIVE_INFINITY));
+      expect(result.lo).toEqual(Option.some(Number.NEGATIVE_INFINITY));
+    });
+
+    test("collection command on a string key surfaces WRONGTYPE as CommandError", async () => {
+      const exit = await runExit(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.set("k:strtype", "v");
+          return yield* redis.hgetAll("k:strtype");
+        }),
+      );
+      const error = failureTag(exit);
+      expect(error?._tag).toBe("CommandError");
+      expect(error?.message).toContain("WRONGTYPE");
+    });
+
+    test("empty hset / sadd / zadd are no-ops returning 0", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          const h = yield* redis.hset("e:h", {});
+          const s = yield* redis.sadd("e:s");
+          const z = yield* redis.zadd("e:z", []);
+          const exists = yield* redis.exists("e:h");
+          return { h, s, z, exists };
+        }),
+      );
+      expect(result).toEqual({ h: 0, s: 0, z: 0, exists: false });
+    });
+
+    test("Redis.setOf: Schema-typed set round-trips", async () => {
+      const Tag = Schema.Struct({ kind: Schema.String, id: Schema.Number });
+      const tags = Redis.setOf(Tag, { prefix: "refset", ttl: Duration.minutes(5) });
+      const result = await run(
+        Effect.gen(function* () {
+          yield* tags("u1").add({ kind: "a", id: 1 }, { kind: "b", id: 2 });
+          const members = yield* tags("u1").members;
+          const has = yield* tags("u1").has({ kind: "a", id: 1 });
+          const size = yield* tags("u1").size;
+          const removed = yield* tags("u1").remove({ kind: "a", id: 1 });
+          return { members, has, size, removed };
+        }),
+      );
+      expect(result.members.map((m) => m.kind).sort()).toEqual(["a", "b"]);
+      expect(result.has).toBe(true);
+      expect(result.size).toBe(2);
+      expect(result.removed).toBe(1);
+    });
+
+    test("Redis.sortedSet: leaderboard add / incrBy / rangeWithScores / rank", async () => {
+      const Player = Schema.Struct({ name: Schema.String });
+      const board = Redis.sortedSet(Player, { prefix: "refzset" });
+      const result = await run(
+        Effect.gen(function* () {
+          yield* board("game1").add({ name: "ada" }, 10);
+          yield* board("game1").add({ name: "bob" }, 20);
+          const bumped = yield* board("game1").incrBy({ name: "ada" }, 15); // ada → 25
+          const top = yield* board("game1").rangeWithScores(0, -1);
+          const rank = yield* board("game1").rank({ name: "bob" }); // bob(20) lowest → rank 0
+          return { bumped, top, rank };
+        }),
+      );
+      expect(result.bumped).toBe(25);
+      expect(result.top).toEqual([
+        [{ name: "bob" }, 20],
+        [{ name: "ada" }, 25],
+      ]);
+      expect(result.rank).toEqual(Option.some(0));
+    });
+
+    test("Redis.hashOf: field→value map round-trips", async () => {
+      const Pref = Schema.Struct({ enabled: Schema.Boolean });
+      const prefs = Redis.hashOf(Pref, { prefix: "refhash" });
+      const result = await run(
+        Effect.gen(function* () {
+          yield* prefs("u1").set("dark", { enabled: true });
+          yield* prefs("u1").set("beta", { enabled: false });
+          const dark = yield* prefs("u1").get("dark");
+          const missing = yield* prefs("u1").get("nope");
+          const all = yield* prefs("u1").getAll;
+          const has = yield* prefs("u1").has("beta");
+          const keys = yield* prefs("u1").keys;
+          const size = yield* prefs("u1").size;
+          const removed = yield* prefs("u1").remove("beta");
+          return { dark, missing, all, has, keys, size, removed };
+        }),
+      );
+      expect(result.dark).toEqual(Option.some({ enabled: true }));
+      expect(Option.isNone(result.missing)).toBe(true);
+      expect(result.all.get("dark")).toEqual({ enabled: true });
+      expect(result.all.get("beta")).toEqual({ enabled: false });
+      expect(result.has).toBe(true);
+      expect([...result.keys].sort()).toEqual(["beta", "dark"]);
+      expect(result.size).toBe(2);
+      expect(result.removed).toBe(1);
+    });
+
+    test("Redis.hashOf: malformed stored value fails with DecodeError", async () => {
+      const rec = Redis.hashOf(Schema.Struct({ n: Schema.Number }), { prefix: "refhash:bad" });
+      const exit = await runExit(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.call("HSET", "refhash:bad:x", "f", "not json");
+          return yield* rec("x").get("f");
+        }),
+      );
+      expect(failureTag(exit)?._tag).toBe("DecodeError");
+    });
+
+    test("Redis.setOf: configured ttl is stamped and keepTtl preserves it", async () => {
+      const set = Redis.setOf(Schema.String, { prefix: "refset:ttl", ttl: Duration.seconds(100) });
+      const result = await run(
+        Effect.gen(function* () {
+          yield* set("k").add("a");
+          const ttl1 = yield* set("k").ttl;
+          yield* set("k").addWith(["b"], { keepTtl: true });
+          const ttl2 = yield* set("k").ttl;
+          return { ttl1, ttl2 };
+        }),
+      );
+      expect(Option.isSome(result.ttl1)).toBe(true);
+      expect(Option.isSome(result.ttl2)).toBe(true);
+    });
+
+    test("Redis.setOf without a configured ttl leaves the key persistent", async () => {
+      const set = Redis.setOf(Schema.String, { prefix: "refset:nottl" });
+      const ttl = await run(
+        Effect.gen(function* () {
+          yield* set("k").add("a");
+          return yield* set("k").ttl;
+        }),
+      );
+      expect(Option.isNone(ttl)).toBe(true);
+    });
+
+    test("ref empty variadic writes short-circuit to 0 without erroring", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const set = Redis.setOf(Schema.String, { prefix: "refset:empty" });
+          const zset = Redis.sortedSet(Schema.String, { prefix: "refzset:empty" });
+          const hash = Redis.hashOf(Schema.String, { prefix: "refhash:empty" });
+          const a = yield* set("k").add();
+          const b = yield* set("k").remove();
+          const c = yield* zset("k").remove();
+          const d = yield* hash("k").remove();
+          return { a, b, c, d };
+        }),
+      );
+      expect(result).toEqual({ a: 0, b: 0, c: 0, d: 0 });
+    });
+
+    test("Cmd builders cover the collection surface via pipeline", async () => {
+      const replies = await run(
+        Effect.flatMap(Redis, (redis) =>
+          redis.pipeline([
+            Cmd.hset("cc:h", { a: "1", b: "2" }),
+            Cmd.hget("cc:h", "a"),
+            Cmd.hlen("cc:h"),
+            Cmd.sadd("cc:s", "x", "y"),
+            Cmd.scard("cc:s"),
+            Cmd.sismember("cc:s", "x"),
+            Cmd.zadd("cc:z", [
+              [1, "a"],
+              [2, "b"],
+            ]),
+            Cmd.zscore("cc:z", "b"),
+            Cmd.zrange("cc:z", 0, -1),
+          ]),
+        ),
+      );
+      expect(replies[0]).toBe(2); // hset added 2 fields
+      expect(replies[1]).toBe("1"); // hget a
+      expect(replies[2]).toBe(2); // hlen
+      expect(replies[3]).toBe(2); // sadd added 2
+      expect(replies[4]).toBe(2); // scard
+      expect(Boolean(replies[5])).toBe(true); // sismember (1 on RESP2, true on RESP3)
+      expect(replies[6]).toBe(2); // zadd added 2
+      expect(Number(replies[7])).toBe(2); // zscore ("2" on RESP2, 2 on RESP3)
+      expect(replies[8]).toEqual(["a", "b"]); // zrange
+    });
+
+    // Forcing function: a stream entry's fields are a flat array on RESP2 (ioredis) and a map on RESP3 (Bun).
+    test("xadd / xrange round-trip; entry fields normalize across RESP2/RESP3", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("x:log");
+          const id1 = yield* redis.xadd("x:log", { type: "a", n: "1" });
+          const id2 = yield* redis.xadd("x:log", { type: "b", n: "2" });
+          const entries = yield* redis.xrange("x:log");
+          const reversed = yield* redis.xrevrange("x:log", "-", "+", { count: 1 });
+          const len = yield* redis.xlen("x:log");
+          return { id1, id2, entries, reversed, len };
+        }),
+      );
+      expect(result.len).toBe(2);
+      expect(result.entries.map((e) => e.id)).toEqual([result.id1, result.id2]);
+      expect(result.entries[0]?.fields).toEqual({ type: "a", n: "1" });
+      expect(result.entries[1]?.fields).toEqual({ type: "b", n: "2" });
+      expect(result.reversed.map((e) => e.id)).toEqual([result.id2]); // newest first
+    });
+
+    test("xread normalizes the outer shape and returns [] for no data", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("x:read");
+          yield* redis.xadd("x:read", { v: "1" }, { id: "1-1" });
+          yield* redis.xadd("x:read", { v: "2" }, { id: "2-1" });
+          const reads = yield* redis.xread([["x:read", "0"]]);
+          const empty = yield* redis.xread([["x:read", "$"]]); // nothing newer than the tail
+          const missing = yield* redis.xread([["x:missing", "0"]]); // missing stream
+          return { reads, empty, missing };
+        }),
+      );
+      expect(result.reads.length).toBe(1);
+      expect(result.reads[0]?.[0]).toBe("x:read");
+      expect(result.reads[0]?.[1].map((e) => e.id)).toEqual(["1-1", "2-1"]);
+      expect(result.empty).toEqual([]);
+      expect(result.missing).toEqual([]);
+    });
+
+    test("xtrim (exact and approx), xdel, and empty xdel → 0", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("x:trim", "x:approx");
+          yield* Effect.forEach(Array.from({ length: 10 }), (_, i) =>
+            redis.xadd("x:trim", { i: String(i) }),
+          );
+          const trimmed = yield* redis.xtrim("x:trim", { maxLen: 5 });
+          const exact = yield* redis.xlen("x:trim");
+          yield* Effect.forEach(Array.from({ length: 10 }), (_, i) =>
+            redis.xadd("x:approx", { i: String(i) }),
+          );
+          yield* redis.xtrim("x:approx", { maxLen: 5, approx: true });
+          const approxLen = yield* redis.xlen("x:approx");
+          const firstId = (yield* redis.xrange("x:trim"))[0]?.id ?? "0-0";
+          const removed = yield* redis.xdel("x:trim", firstId);
+          const noop = yield* redis.xdel("x:trim");
+          return { trimmed, exact, approxLen, removed, noop };
+        }),
+      );
+      expect(result.trimmed).toBe(5);
+      expect(result.exact).toBe(5);
+      expect(result.approxLen).toBeGreaterThanOrEqual(5); // ~ keeps at least maxLen, often more
+      expect(result.removed).toBe(1);
+      expect(result.noop).toBe(0);
+    });
+
+    test("xadd with a non-monotonic explicit id fails with CommandError", async () => {
+      const exit = await runExit(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("x:mono");
+          yield* redis.xadd("x:mono", { v: "1" }, { id: "5-0" });
+          return yield* redis.xadd("x:mono", { v: "2" }, { id: "3-0" });
+        }),
+      );
+      expect(failureTag(exit)?._tag).toBe("CommandError");
+    });
+
+    test("Redis.stream: typed log round-trips via add / range", async () => {
+      const Event = Schema.Struct({ kind: Schema.String, seq: Schema.Number });
+      const log = Redis.stream(Event, { prefix: "stream:typed" });
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("stream:typed:t1");
+          yield* log("t1").add({ kind: "a", seq: 1 });
+          yield* log("t1").add({ kind: "b", seq: 2 });
+          const range = yield* log("t1").range();
+          const len = yield* log("t1").len;
+          return { range, len };
+        }),
+      );
+      expect(result.len).toBe(2);
+      expect(result.range.map((e) => e.message)).toEqual([
+        { kind: "a", seq: 1 },
+        { kind: "b", seq: 2 },
+      ]);
+    });
+
+    test('Redis.stream: malformed and missing-"d" entries fail with DecodeError', async () => {
+      const log = Redis.stream(Schema.Struct({ n: Schema.Number }), { prefix: "stream:bad" });
+      const malformed = await runExit(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("stream:bad:m");
+          yield* redis.call("XADD", "stream:bad:m", "*", "d", "not json");
+          return yield* log("m").range();
+        }),
+      );
+      const missing = await runExit(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("stream:bad:x");
+          yield* redis.call("XADD", "stream:bad:x", "*", "other", "1"); // no "d" field
+          return yield* log("x").range();
+        }),
+      );
+      expect(failureTag(malformed)?._tag).toBe("DecodeError");
+      expect(failureTag(missing)?._tag).toBe("DecodeError");
+    });
+
+    test("consumer group: xreadGroup / xack / xpending / claimStale", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("x:grp");
+          yield* redis.xadd("x:grp", { v: "1" }, { id: "1-1" });
+          yield* redis.xadd("x:grp", { v: "2" }, { id: "2-1" });
+          yield* redis.xgroupCreate("x:grp", "g1", { from: "0" });
+          const reads = yield* redis.xreadGroup("g1", "c1", [["x:grp", ">"]]);
+          const entries = reads.flatMap(([, es]) => es);
+          const pendingBefore = yield* redis.xpending("x:grp", "g1");
+          yield* redis.xack("x:grp", "g1", entries[0]?.id ?? "0-0");
+          const pendingAfter = yield* redis.xpending("x:grp", "g1");
+          // c2 claims whatever c1 still holds (minIdle 0 → everything pending)
+          const claimed = yield* redis.streams.claimStale("x:grp", "g1", "c2", {
+            minIdle: Duration.millis(0),
+          });
+          return { reads, entries, pendingBefore, pendingAfter, claimed };
+        }),
+      );
+      expect(result.reads[0]?.[0]).toBe("x:grp");
+      expect(result.entries.map((e) => e.id)).toEqual(["1-1", "2-1"]);
+      expect(result.pendingBefore.count).toBe(2);
+      expect(result.pendingAfter.count).toBe(1);
+      expect(result.claimed.map((e) => e.id)).toEqual(["2-1"]); // the un-acked one
+    });
+
+    test("streams.read live-tails entries and releases its connection on scope close", async () => {
+      const connectedClients = (r: RedisService) =>
+        r
+          .call("INFO", "clients")
+          .pipe(
+            Effect.map((info) => Number(/connected_clients:(\d+)/.exec(String(info))?.[1] ?? "0")),
+          );
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("x:tail");
+          const before = yield* connectedClients(redis);
+          const fiber = yield* Redis.use((r) =>
+            r.streams.read("x:tail", { from: "$", block: Duration.millis(200) }),
+          ).pipe(Stream.take(2), Stream.runCollect, Effect.fork);
+          const producer = yield* Effect.fork(
+            redis
+              .xadd("x:tail", { v: "x" })
+              .pipe(Effect.delay(Duration.millis(100)), Effect.forever),
+          );
+          const received = yield* Fiber.join(fiber).pipe(
+            Effect.timeoutFail({
+              duration: Duration.seconds(15),
+              onTimeout: () => new CommandError({ message: "stream read timed out" }),
+            }),
+          );
+          yield* Fiber.interrupt(producer);
+          yield* connectedClients(redis).pipe(
+            Effect.flatMap((n) =>
+              n <= before
+                ? Effect.void
+                : Effect.fail(new CommandError({ message: "dedicated connection not released" })),
+            ),
+            Effect.retry(Schedule.recurs(50).pipe(Schedule.addDelay(() => Duration.millis(100)))),
+          );
+          return Chunk.toReadonlyArray(received).length;
+        }),
+      );
+      expect(result).toBe(2);
+    });
+
+    test("streams.readGroup delivers entries and ack clears the PEL", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("x:gstream");
+          const fiber = yield* Redis.use((r) =>
+            r.streams.readGroup("x:gstream", {
+              group: "g",
+              consumer: "c",
+              from: "0",
+              block: Duration.millis(200),
+            }),
+          ).pipe(Stream.take(1), Stream.runCollect, Effect.fork);
+          const producer = yield* Effect.fork(
+            redis
+              .xadd("x:gstream", { v: "hello" })
+              .pipe(Effect.delay(Duration.millis(100)), Effect.forever),
+          );
+          const received = yield* Fiber.join(fiber).pipe(
+            Effect.timeoutFail({
+              duration: Duration.seconds(15),
+              onTimeout: () => new CommandError({ message: "group read timed out" }),
+            }),
+          );
+          yield* Fiber.interrupt(producer);
+          const entry = Chunk.toReadonlyArray(received)[0];
+          const pendingBefore = yield* redis.xpending("x:gstream", "g");
+          yield* entry?.ack ?? Effect.void;
+          const pendingAfter = yield* redis.xpending("x:gstream", "g");
+          return {
+            fields: entry?.fields,
+            before: pendingBefore.count,
+            after: pendingAfter.count,
+          };
+        }),
+      );
+      expect(result.fields).toEqual({ v: "hello" });
+      expect(result.before).toBeGreaterThanOrEqual(1);
+      expect(result.after).toBe(result.before - 1);
+    });
+
+    test("xpendingExtended / xclaim / xinfo expose the group surface", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("x:info");
+          yield* redis.xadd("x:info", { v: "1" }, { id: "1-1" });
+          yield* redis.xadd("x:info", { v: "2" }, { id: "2-1" });
+          yield* redis.xgroupCreate("x:info", "g", { from: "0" });
+          yield* redis.xreadGroup("g", "c1", [["x:info", ">"]]); // both entries now pending for c1
+          const pending = yield* redis.xpendingExtended("x:info", "g", { count: 10 });
+          const claimed = yield* redis.xclaim("x:info", "g", "c2", Duration.millis(0), ["1-1"]);
+          const info = yield* redis.xinfoStream("x:info");
+          const groups = yield* redis.xinfoGroups("x:info");
+          return { pending, claimed, info, groups };
+        }),
+      );
+      expect(result.pending.map((p) => p.id)).toEqual(["1-1", "2-1"]);
+      expect(result.pending.every((p) => p.consumer === "c1" && p.deliveryCount === 1)).toBe(true);
+      expect(result.claimed.map((e) => e.id)).toEqual(["1-1"]); // moved from c1 to c2
+      expect(result.info.length).toBe("2"); // scalar fields survive; nested entries are dropped
+      expect(result.groups.some((g) => g.name === "g")).toBe(true);
+    });
+
+    test("streams.read reconnects and resumes after its connection is dropped", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("x:reconnect");
+          yield* redis.xadd("x:reconnect", { v: "a" });
+          const fiber = yield* Redis.use((r) =>
+            r.streams.read("x:reconnect", { from: "0", block: Duration.millis(100) }),
+          ).pipe(Stream.take(3), Stream.runCollect, Effect.fork);
+          // Let the consumer read "a" and advance its lastId, then drop its dedicated connection.
+          // CLIENT KILL spares the caller (SKIPME defaults to yes), so only the consumer dies.
+          yield* Effect.sleep(Duration.millis(500));
+          yield* redis.call("CLIENT", "KILL", "TYPE", "normal").pipe(Effect.ignore);
+          // Produce the rest only after the kill, so delivery proves the consumer reconnected.
+          const retryWrite = Schedule.recurs(30).pipe(
+            Schedule.addDelay(() => Duration.millis(100)),
+          );
+          yield* redis.xadd("x:reconnect", { v: "b" }).pipe(Effect.retry(retryWrite));
+          yield* redis.xadd("x:reconnect", { v: "c" }).pipe(Effect.retry(retryWrite));
+          const received = yield* Fiber.join(fiber).pipe(
+            Effect.timeoutFail({
+              duration: Duration.seconds(25),
+              onTimeout: () => new CommandError({ message: "reconnect read timed out" }),
+            }),
+          );
+          return Chunk.toReadonlyArray(received).map((e) => e.fields.v);
+        }),
+      );
+      expect(result).toEqual(["a", "b", "c"]); // resumed past "a", no loss, no duplicate
+    }, 30_000);
+
+    test("streams.read fails fast on WRONGTYPE instead of retrying forever", async () => {
+      const exit = await runExit(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("x:wrongtype");
+          yield* redis.set("x:wrongtype", "i am a string");
+          return yield* Redis.use((r) =>
+            r.streams.read("x:wrongtype", { from: "0", block: Duration.millis(100) }),
+          ).pipe(Stream.take(1), Stream.runCollect);
+        }).pipe(
+          // If a non-connection error were retried, this would loop until the deadline fires.
+          Effect.timeoutFail({
+            duration: Duration.seconds(10),
+            onTimeout: () =>
+              new CommandError({ message: "stream read did not fail fast (looping?)" }),
+          }),
+        ),
+      );
+      expect(failureTag(exit)?._tag).toBe("CommandError");
+      expect(failureTag(exit)?.message).toContain("WRONGTYPE");
+    });
+
+    test("Redis.stream consume runs the handler and auto-acks after success", async () => {
+      const Event = Schema.Struct({ n: Schema.Number });
+      const log = Redis.stream(Event, { prefix: "stream:consume" });
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("stream:consume:c1");
+          yield* log("c1").add({ n: 1 });
+          yield* log("c1").add({ n: 2 });
+          const handled = yield* Ref.make<ReadonlyArray<number>>([]);
+          const emitted = yield* log("c1")
+            .consume({ group: "g", consumer: "c", from: "0", block: Duration.millis(200) }, (e) =>
+              Ref.update(handled, (xs) => [...xs, e.n]),
+            )
+            .pipe(
+              Stream.take(2),
+              Stream.runCollect,
+              Effect.timeoutFail({
+                duration: Duration.seconds(15),
+                onTimeout: () => new CommandError({ message: "consume timed out" }),
+              }),
+            );
+          const pending = yield* redis.xpending("stream:consume:c1", "g");
+          return {
+            emitted: Chunk.toReadonlyArray(emitted).map((m) => m.n),
+            handled: yield* Ref.get(handled),
+            pendingCount: pending.count,
+          };
+        }),
+      );
+      expect(result.emitted).toEqual([1, 2]);
+      expect(result.handled).toEqual([1, 2]);
+      expect(result.pendingCount).toBe(0); // every delivered entry was acked after its handler
+    });
+
+    test("Redis.stream group yields typed entries with a manual ack", async () => {
+      const Event = Schema.Struct({ n: Schema.Number });
+      const log = Redis.stream(Event, { prefix: "stream:group" });
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("stream:group:g1");
+          yield* log("g1").add({ n: 7 });
+          const head = yield* log("g1")
+            .group({ group: "g", consumer: "c", from: "0", block: Duration.millis(200) })
+            .pipe(
+              Stream.runHead,
+              Effect.timeoutFail({
+                duration: Duration.seconds(15),
+                onTimeout: () => new CommandError({ message: "group read timed out" }),
+              }),
+            );
+          const entry = Option.getOrNull(head);
+          const before = yield* redis.xpending("stream:group:g1", "g");
+          yield* entry?.ack ?? Effect.void; // manual ack, not auto
+          const after = yield* redis.xpending("stream:group:g1", "g");
+          return { message: entry?.message, before: before.count, after: after.count };
+        }),
+      );
+      expect(result.message).toEqual({ n: 7 });
+      expect(result.before).toBe(1);
+      expect(result.after).toBe(0);
+    });
+
+    test("Redis.stream consume leaves the entry pending when the handler fails", async () => {
+      const Event = Schema.Struct({ n: Schema.Number });
+      const log = Redis.stream(Event, { prefix: "stream:consumefail" });
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          yield* redis.del("stream:consumefail:c1");
+          yield* log("c1").add({ n: 1 });
+          const exit = yield* log("c1")
+            .consume({ group: "g", consumer: "c", from: "0", block: Duration.millis(200) }, () =>
+              Effect.fail(new CommandError({ message: "boom" })),
+            )
+            .pipe(Stream.runDrain, Effect.timeout(Duration.seconds(10)), Effect.exit);
+          const pending = yield* redis.xpending("stream:consumefail:c1", "g");
+          return { failed: Exit.isFailure(exit), pending: pending.count };
+        }),
+      );
+      expect(result.failed).toBe(true); // the handler error terminates the consumer
+      expect(result.pending).toBe(1); // and the un-acked entry stays pending for claimStale
     });
   });
 };

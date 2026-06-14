@@ -15,6 +15,11 @@ export interface ConnectionService {
   ) => Effect.Effect<ReadonlyArray<RespValue>, RedisError>;
   /** Subscribes on a dedicated connection; the Stream unsubscribes on scope close. */
   readonly subscribe: (channels: ReadonlyArray<string>) => Stream.Stream<PushMessage, RedisError>;
+  /** Runs `f` over a fresh, un-pooled, un-timed connection the Stream owns and closes on scope
+   *  close — the escape hatch for blocking reads (`XREAD BLOCK`, later `BLPOP`/`WAIT`). */
+  readonly dedicated: <A, E>(
+    f: (conn: ConnectionService) => Stream.Stream<A, E>,
+  ) => Stream.Stream<A, E | RedisError>;
   readonly close: Effect.Effect<void>;
 }
 
@@ -28,6 +33,7 @@ export const pooledConnection = (
   makeConnection: Effect.Effect<ConnectionService, ConnectionError, Scope.Scope>,
   size: number,
   subscribe: ConnectionService["subscribe"],
+  dedicated: ConnectionService["dedicated"],
 ): Effect.Effect<ConnectionService, ConnectionError, Scope.Scope> =>
   Effect.gen(function* () {
     const pool = yield* Pool.make({ acquire: makeConnection, size });
@@ -41,6 +47,7 @@ export const pooledConnection = (
       send: (command) => withConn((conn) => conn.send(command)),
       pipeline: (commands) => withConn((conn) => conn.pipeline(commands)),
       subscribe,
+      dedicated,
       close: Effect.void,
     };
   });

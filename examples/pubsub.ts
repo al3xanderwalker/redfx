@@ -2,9 +2,9 @@
 // Schema, and unsubscribes when the stream's scope closes. No `duplicate()`, no manual listener
 // bookkeeping, no try/JSON.parse/catch. Type-checked in CI (see tsconfig `include`), not run.
 
+import { Redis } from "@redfx/core";
+import { IoRedis } from "@redfx/ioredis";
 import { Config, Effect, Schema, Stream } from "effect";
-import { Redis } from "redfx";
-import { IoRedis } from "redfx-ioredis";
 
 const SseEvent = Schema.Struct({
   topic: Schema.String,

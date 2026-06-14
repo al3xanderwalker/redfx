@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { Redis, RedisCache, type RedisError } from "@redfx/core";
+import { IoRedis } from "@redfx/ioredis";
 import { Duration, Effect, Option, Schema } from "effect";
-import { Redis, RedisCache, type RedisError } from "redfx";
-import { IoRedis } from "redfx-ioredis";
 
 // Skipped unless pointed at a real cluster (the conformance container is single-node):
 //   REDIS_CLUSTER_NODES=127.0.0.1:7100,127.0.0.1:7101 bun test test/ioredis-cluster.test.ts

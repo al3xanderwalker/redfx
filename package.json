@@ -1,6 +1,6 @@
 {
   "name": "redfx-monorepo",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "Ergonomic Effect-native Redis: typed commands, Schema-typed keys, pub/sub as Stream.",
@@ -24,9 +24,9 @@
     "effect": "^3.21.3",
     "fast-check": "^3.23.0",
     "ioredis": "^5.11.0",
-    "redfx": "workspace:*",
-    "redfx-bun": "workspace:*",
-    "redfx-ioredis": "workspace:*",
+    "@redfx/core": "workspace:*",
+    "@redfx/bun": "workspace:*",
+    "@redfx/ioredis": "workspace:*",
     "testcontainers": "^12.0.0",
     "typescript": "^5.9.3"
   }

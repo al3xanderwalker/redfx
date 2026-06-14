@@ -1,13 +1,3 @@
-import { RedisClient } from "bun";
-import {
-  type Config,
-  type ConfigError,
-  type Duration,
-  Effect,
-  Layer,
-  type Scope,
-  Stream,
-} from "effect";
 import {
   CommandError,
   ConnectionError,
@@ -19,7 +9,17 @@ import {
   type RedisCommand,
   type RedisError,
   type RespValue,
-} from "redfx";
+} from "@redfx/core";
+import { RedisClient } from "bun";
+import {
+  type Config,
+  type ConfigError,
+  type Duration,
+  Effect,
+  Layer,
+  type Scope,
+  Stream,
+} from "effect";
 
 type BunRedisOptions = ConstructorParameters<typeof RedisClient>[1];
 
@@ -117,6 +117,28 @@ const subscribeStream =
       }),
     );
 
+// redfx owns reconnection here (pool invalidation / Stream.retry), so disable bun's: otherwise a
+// killed connection silently queues/resends and hangs in-flight commands instead of failing fast.
+const failFastConfig = (config: ClientConfig): ClientConfig => ({
+  ...config,
+  options: { ...config.options, autoReconnect: false, enableOfflineQueue: false },
+});
+
+const dedicatedStream =
+  (config: ClientConfig): ConnectionService["dedicated"] =>
+  (f) =>
+    Stream.unwrapScoped(
+      Effect.map(makeClient(failFastConfig(config)), (client) =>
+        f({
+          send: send(client),
+          pipeline: pipeline(client),
+          subscribe: subscribeStream(config),
+          dedicated: dedicatedStream(config),
+          close: Effect.sync(() => client.close()),
+        }),
+      ),
+    );
+
 const makeConnection = (
   config: ClientConfig,
 ): Effect.Effect<ConnectionService, ConnectionError, Scope.Scope> =>
@@ -126,6 +148,7 @@ const makeConnection = (
       send: send(client),
       pipeline: pipeline(client),
       subscribe: subscribeStream(config),
+      dedicated: dedicatedStream(config),
       close: Effect.sync(() => client.close()),
     } satisfies ConnectionService;
   });
@@ -145,7 +168,12 @@ export namespace BunRedis {
     config: ClientConfig & { readonly size: number },
   ): Layer.Layer<Redis, ConnectionError> =>
     layerConnection(
-      pooledConnection(makeConnection(config), config.size, subscribeStream(config)),
+      pooledConnection(
+        makeConnection(failFastConfig(config)),
+        config.size,
+        subscribeStream(config),
+        dedicatedStream(config),
+      ),
       {
         commandTimeout: config.commandTimeout,
       },
