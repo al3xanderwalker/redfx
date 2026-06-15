@@ -1,6 +1,6 @@
 {
   "name": "@redfx/core",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Ergonomic Effect-native Redis core: typed commands, Schema-typed keys, pub/sub as Stream, Lua scripts, over a driver-agnostic send-level port.",
   "license": "MIT",
   "author": "Alex Walker",

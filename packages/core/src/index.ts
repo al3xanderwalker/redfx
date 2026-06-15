@@ -15,6 +15,12 @@ export type {
   XAutoclaimResult,
 } from "./internal/decode.js";
 export {
+  RateLimit,
+  type RateLimitDecision,
+  type RateLimitHandle,
+  type RateLimitOptions,
+} from "./RateLimit.js";
+export {
   type GroupEntry,
   type GroupReadOptions,
   KeyTtl,
