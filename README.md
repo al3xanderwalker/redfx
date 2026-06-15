@@ -277,6 +277,32 @@ backoff. Keep `memory.ttl <= ttl` so L1 never serves a value Redis has already e
 constructor warns if it doesn't. Note the 1s floor on L2 TTL (Redis `EX` is whole seconds). There's
 no `invalidateAll` — bump a segment in `prefix` to version a whole namespace instead.
 
+### Rate limiting
+
+`RateLimit.make` is a distributed sliding-window limiter: one atomic Lua script per `check`, so the
+read-estimate-increment is race-free and INCR + EXPIRE can't split (a lost EXPIRE that strands a
+counter without a TTL — and so locks an identifier out forever — is structurally impossible). It
+weighs the previous window's count by how much of it still overlaps, which bounds the across-edge
+burst to `max` rather than the `2*max` a fixed-window counter allows. The server clock (`TIME`) is
+the reference, so client skew never enters the estimate.
+
+```ts
+const limiter = RateLimit.make({
+  window: Duration.minutes(1),
+  max: 100,
+  prefix: "rl:api", // counters live at rl:api:{identifier}:{bucket}; default "rl"
+})
+
+const { allowed, remaining, resetAfter, limit } = yield* limiter.check(userId) // Effect<_, RedisError, Redis>
+if (!allowed) return yield* tooManyRequests(resetAfter) // map to your own 429 + Retry-After
+```
+
+`check` returns a decision, not a thrown error: redfx stays domain-agnostic, so the consumer maps
+`allowed`/`resetAfter`/`remaining` onto its own response (a 429, `Retry-After`, `X-RateLimit-*`). The
+handle is a plain builder like `ref` — it threads `Redis` through the channel — and builds its script
+once at `make`, so reuse one handle per rule rather than constructing per request. Windows floor to a
+1s resolution (the server clock is whole seconds).
+
 ## Examples
 
 Runnable, type-checked walkthroughs live in [`examples/`](examples) (each supplies a real adapter

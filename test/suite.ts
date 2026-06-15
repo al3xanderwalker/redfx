@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   Cmd,
   CommandError,
+  RateLimit,
   Redis,
   RedisCache,
   type RedisError,
@@ -644,6 +645,110 @@ export const runConformance = (adapter: ConformanceAdapter) => {
       expect(result.warmA).toBe(1);
       expect(result.warmB).toBe(1);
       expect(result.afterInvalidate).toBeGreaterThanOrEqual(2);
+    });
+
+    test("RateLimit: admits exactly max per window, then denies with a shaped decision", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const limiter = RateLimit.make({
+            window: Duration.minutes(1),
+            max: 3,
+            prefix: "rl:exact",
+          });
+          const allowed = yield* Effect.all(
+            Array.from({ length: 3 }, () => limiter.check("u1")),
+            { concurrency: 1 },
+          );
+          const denied = yield* limiter.check("u1");
+          return { allowed, denied };
+        }),
+      );
+      expect(result.allowed.map((d) => d.allowed)).toEqual([true, true, true]);
+      expect(result.allowed.map((d) => d.remaining)).toEqual([2, 1, 0]);
+      expect(result.denied.allowed).toBe(false);
+      expect(result.denied.remaining).toBe(0);
+      expect(result.denied.limit).toBe(3);
+      expect(Duration.toSeconds(result.denied.resetAfter)).toBeGreaterThan(0);
+      expect(Duration.toSeconds(result.denied.resetAfter)).toBeLessThanOrEqual(60);
+    });
+
+    test("RateLimit: the counter is written with a TTL atomically (no lost-EXPIRE lockout)", async () => {
+      const ttl = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          const limiter = RateLimit.make({
+            window: Duration.seconds(30),
+            max: 5,
+            prefix: "rl:ttlatomic",
+          });
+          yield* limiter.check("u1");
+          const keys = yield* redis.call("KEYS", "rl:ttlatomic:u1:*");
+          const key = (keys as ReadonlyArray<string>)[0];
+          if (key === undefined) return Option.none<Duration.Duration>();
+          return yield* redis.ttl(key);
+        }),
+      );
+      expect(Option.isSome(ttl)).toBe(true);
+      const seconds = Option.match(ttl, {
+        onNone: () => 0,
+        onSome: (d) => Duration.toSeconds(d),
+      });
+      expect(seconds).toBeGreaterThan(0);
+      expect(seconds).toBeLessThanOrEqual(60); // 2 * window
+    });
+
+    test("RateLimit: concurrent checks admit exactly max under contention", async () => {
+      const allowed = await run(
+        Effect.gen(function* () {
+          const limiter = RateLimit.make({
+            window: Duration.minutes(1),
+            max: 10,
+            prefix: "rl:conc",
+          });
+          const decisions = yield* Effect.all(
+            Array.from({ length: 25 }, () => limiter.check("u1")),
+            { concurrency: "unbounded" },
+          );
+          return decisions.filter((d) => d.allowed).length;
+        }),
+      );
+      expect(allowed).toBe(10);
+    });
+
+    test("RateLimit: the previous window's load blocks an across-edge burst (no 2x max)", async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const redis = yield* Redis;
+          const limiter = RateLimit.make({
+            window: Duration.seconds(1),
+            max: 3,
+            prefix: "rl:edge",
+          });
+          // Align just past a 1s boundary so the burst starts at elapsed≈0.
+          const time = yield* redis.call("TIME");
+          const micros = Number((time as ReadonlyArray<string>)[1] ?? "0");
+          yield* Effect.sleep(Duration.millis(1000 - Math.floor(micros / 1000) + 20));
+          const a = yield* Effect.all(
+            Array.from({ length: 3 }, () => limiter.check("u1")),
+            { concurrency: 1 },
+          );
+          const overA = yield* limiter.check("u1");
+          yield* Effect.sleep(Duration.millis(1000)); // into window B, A still fully weighs
+          const firstB = yield* limiter.check("u1");
+          yield* Effect.sleep(Duration.millis(1000)); // A decayed out
+          const afterDecay = yield* limiter.check("u1");
+          return {
+            a: a.map((d) => d.allowed),
+            overA: overA.allowed,
+            firstB: firstB.allowed,
+            afterDecay: afterDecay.allowed,
+          };
+        }),
+      );
+      expect(result.a).toEqual([true, true, true]);
+      expect(result.overA).toBe(false);
+      expect(result.firstB).toBe(false);
+      expect(result.afterDecay).toBe(true);
     });
 
     test("hash: hset / hget / hgetAll / hdel / hexists / hincrBy / hlen / hkeys / hvals / hmget", async () => {
