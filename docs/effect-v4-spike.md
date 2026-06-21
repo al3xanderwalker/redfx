@@ -66,17 +66,35 @@ package name (`@redfx/core4`) if consumers need both installed at once during th
    Fixing these two definitions collapses a large fraction of the 262 core errors.
 3. **`Data.TaggedError`** (`RedisError.ts`) — compiled, but verify error/`Cause` semantics; the
    200 test errors include `Cause`/`Exit` shape changes (Cause flattened tree→array in v4).
-4. **Mechanical renames** (stable to fix, find/replace-scale):
-   - `Schedule.union` → `Schedule.both`; `Schedule.whileInput` → `Schedule.check`/`while*`
-     (`Redis.ts:300-301`, `Cache.ts:254`). `exponential`/`jittered`/`spaced` retained.
-   - `Stream.repeatEffectChunk` — removed; rebuild the consumer loop on `Stream.fromPull`
-     (`Redis.ts:325,371`).
-   - `Effect.timeoutFail` → `timeout`/`timeoutOption` (`Redis.ts:557,565`);
-     `Effect.catchAll` → `catch` (`Cache.ts:257`); `Effect.zipRight` → `andThen`
-     (`Redis.ts:1019`).
-   - `Layer.scoped` → `Layer.effect` (scope is implicit in v4) (`Redis.ts:1075`).
+4. **Renames / removed APIs.** CONFIDENCE VARIES — the *old* symbol is confirmed removed in
+   every case; the *replacement* is *not* a proven 1-for-1 unless marked ✅-verified. Verifying
+   each mapping requires actually applying it and compiling, which is blocked by the Schema +
+   Context.Tag cascades — i.e. it needs the full port. Do not treat this table as drop-in.
+   - `Schedule.union` (`Redis.ts:300`, `Cache.ts:254`): removed. Candidate `Schedule.both`
+     *exists* but signature equivalence UNVERIFIED.
+   - `Schedule.whileInput` (`Redis.ts:301`): removed. **Replacement UNKNOWN** — no `check` or
+     `whileInput` in v4 dist; needs investigation.
+   - `Stream.repeatEffectChunk` (`Redis.ts:325,371`): removed. Likely rebuild on
+     `Stream.fromPull`. UNVERIFIED.
+   - `Effect.timeoutFail` (`Redis.ts:557,565`): removed. Maps to `timeout`/`timeoutOrElse`
+     shape — NOT a rename, call shape changes. UNVERIFIED.
+   - `Effect.catchAll` (`Cache.ts:257`): removed. **There is NO bare `Effect.catch`** — the
+     catch family is `catchCause`/`catchFilter`/`catchTag`/`catchIf`/… Correct target UNKNOWN.
+   - `Effect.zipRight` (`Redis.ts:1019`): removed. `andThen` exists but is broader, not drop-in.
+   - `Layer.scoped` (`Redis.ts:1075`): removed. `Layer.effect` *exists* (scope implicit in v4);
+     equivalence UNVERIFIED.
+   - `ParseResult` top-level export (`Redis.ts:9`): removed. Likely under
+     `SchemaIssue`/`SchemaParser`. UNVERIFIED.
    - `Duration.DurationInput` type path moved + `Duration.decode` removed — affects
      `RedisCommand.ts` pervasively, but RedisCommand is otherwise pure string-building.
+
+## What was NOT done (honesty about coverage)
+
+- **No compiling v4 build was produced** — the Schema and `Context.Tag` cascades block a clean
+  compile without the full port.
+- **The runtime test suite was NOT run against v4** (needs a working build + testcontainers).
+- The **replacement** API mappings above are matched by name/docs, not proven 1-for-1. The
+  only verified-clean files are `internal/decode.ts` and `RespValue.ts` (0 errors each).
 
 ## Effort read
 
