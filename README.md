@@ -7,6 +7,10 @@
 Ergonomic Redis for [Effect](https://effect.website): typed commands, Schema-typed keys, pub/sub and
 streams as a `Stream`, and distributed caching, over a small driver-agnostic port.
 
+> **Using Effect v4?** A v4-compatible beta is published on the `@beta` dist-tag (redfx `2.x`):
+> `npm i @redfx/core@beta effect@beta`. See [the `v4` branch](https://github.com/al3xanderwalker/redfx/tree/v4).
+> This README documents the stable **Effect v3** line (`1.x`, on `latest`).
+
 ```ts
 import { Redis } from "@redfx/core"
 import { BunRedis } from "@redfx/bun"
