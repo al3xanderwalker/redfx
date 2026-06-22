@@ -11,8 +11,7 @@ const User = Schema.Struct({
   plan: Schema.Literals(["free", "pro"]),
 });
 
-class UserNotFound extends Schema.ErrorClass<UserNotFound>("UserNotFound")({
-  _tag: Schema.tag("UserNotFound"),
+class UserNotFound extends Schema.TaggedErrorClass<UserNotFound>()("UserNotFound", {
   id: Schema.String,
 }) {}
 

@@ -49,10 +49,10 @@ The error count was dominated by **cascades** from a few roots, not by breadth:
 | `Schema.Literal(a,b,…)` | `Schema.Literals([a,b,…])` | single-arg `Literal` unchanged |
 | `Schema.Record({key,value})` | `Schema.Record(key, value)` | positional |
 | `Schema.Tuple(a,b,c)` | `Schema.Tuple([a,b,c])` | array arg |
-| `Schema.TaggedError<S>()("T",f)` | `Schema.ErrorClass<S>("T")({ _tag: Schema.tag("T"), …f })` | |
+| `Schema.TaggedError<S>()("T",f)` | `Schema.TaggedErrorClass<S>()("T",f)` | same call shape, auto-`_tag` |
 | `ParseResult` (top-level) | (gone) | use `SchemaError` / `Schema.*` |
 | `Schedule.union(s)` | `Schedule.either(s)` | **recur-if-either, MIN delay.** `both` is the intersection (MAX delay) — wrong here, and the runtime test caught it |
-| `Schedule.whileInput(p)` | `Schedule.tapInput((e) => p(e) ? Effect.void : Effect.fail(e))` | no direct `whileInput`; halt via the Error channel |
+| `Schedule.whileInput(p)` | `Schedule.tapInput((e) => p(e) ? Effect.void : Effect.fail(e))` | v4 has no `whileInput`/`while`/`recurWhile`, and `Stream.retry` takes no `while` option — so the predicate must live in the schedule, halting via its Error channel. Both branches are runtime-tested: reconnect-on-`ConnectionError` and fail-fast-on-`WRONGTYPE` |
 | `Stream.repeatEffectChunk(eff)` | `Stream.forever(Stream.fromArrayEffect(eff))` | switch the per-iteration `Chunk` to an array |
 | `Stream.asyncScoped((emit)=>…)` | `Stream.callback((queue)=>…)` | push with `Queue.offerUnsafe`; fail with `Queue.failCauseUnsafe(q, Cause.fail(e))` |
 | `Stream.unwrapScoped` | `Stream.unwrap` | scope is implicit |
