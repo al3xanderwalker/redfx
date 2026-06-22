@@ -8,10 +8,11 @@ import { Config, Duration, Effect, Schema } from "effect";
 const User = Schema.Struct({
   id: Schema.String,
   email: Schema.String,
-  plan: Schema.Literal("free", "pro"),
+  plan: Schema.Literals(["free", "pro"]),
 });
 
-class UserNotFound extends Schema.TaggedError<UserNotFound>()("UserNotFound", {
+class UserNotFound extends Schema.ErrorClass<UserNotFound>("UserNotFound")({
+  _tag: Schema.tag("UserNotFound"),
   id: Schema.String,
 }) {}
 

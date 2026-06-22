@@ -23,10 +23,9 @@ export interface ConnectionService {
   readonly close: Effect.Effect<void>;
 }
 
-export class RedisConnection extends Context.Tag("redfx/RedisConnection")<
-  RedisConnection,
-  ConnectionService
->() {}
+export class RedisConnection extends Context.Service<RedisConnection, ConnectionService>()(
+  "redfx/RedisConnection",
+) {}
 
 /** Pools command connections, dropping any that fail with `ConnectionError`. */
 export const pooledConnection = (

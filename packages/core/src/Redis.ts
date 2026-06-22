@@ -1,12 +1,10 @@
 import {
-  Chunk,
   Context,
   Data,
   Duration,
   Effect,
   Layer,
   Option,
-  type ParseResult,
   Ref,
   Schedule,
   Schema,
@@ -80,7 +78,7 @@ const toKeyTtl = (seconds: number): KeyTtl =>
 
 export interface StreamReadOptions {
   readonly count?: number;
-  readonly block?: Duration.DurationInput;
+  readonly block?: Duration.Input;
   /** First id to read from; default `"$"` (live tail — only entries added after the read begins). */
   readonly from?: string;
 }
@@ -91,7 +89,7 @@ export interface GroupReadOptions {
   /** Group start position at creation (ignored if the group already exists); default `"$"`. */
   readonly from?: string;
   readonly count?: number;
-  readonly block?: Duration.DurationInput;
+  readonly block?: Duration.Input;
 }
 
 /** One entry from a consumer group, carrying its own manual `ack` (`XACK key group id`). */
@@ -111,7 +109,7 @@ export interface RedisService {
   readonly getDelete: (key: string) => Effect.Effect<Option.Option<string>, RedisError>;
   readonly del: (...keys: ReadonlyArray<string>) => Effect.Effect<number, RedisError>;
   readonly exists: (key: string) => Effect.Effect<boolean, RedisError>;
-  readonly expire: (key: string, ttl: Duration.DurationInput) => Effect.Effect<boolean, RedisError>;
+  readonly expire: (key: string, ttl: Duration.Input) => Effect.Effect<boolean, RedisError>;
   /** `None` if the key is missing or persistent; use `ttlState` to tell those apart. */
   readonly ttl: (key: string) => Effect.Effect<Option.Option<Duration.Duration>, RedisError>;
   readonly ttlState: (key: string) => Effect.Effect<KeyTtl, RedisError>;
@@ -193,7 +191,7 @@ export interface RedisService {
   ) => Effect.Effect<ReadonlyArray<RespValue>, RedisError>;
   readonly subscribe: {
     (channel: string): Stream.Stream<string, RedisError>;
-    <A, I>(channel: string, schema: Schema.Schema<A, I>): Stream.Stream<A, RedisError>;
+    <A, I>(channel: string, schema: Schema.Codec<A, I>): Stream.Stream<A, RedisError>;
   };
   readonly xadd: (
     key: string,
@@ -244,21 +242,21 @@ export interface RedisService {
       readonly end?: string;
       readonly count: number;
       readonly consumer?: string;
-      readonly idle?: Duration.DurationInput;
+      readonly idle?: Duration.Input;
     },
   ) => Effect.Effect<ReadonlyArray<PendingEntry>, RedisError>;
   readonly xclaim: (
     key: string,
     group: string,
     consumer: string,
-    minIdle: Duration.DurationInput,
+    minIdle: Duration.Input,
     ids: ReadonlyArray<string>,
   ) => Effect.Effect<ReadonlyArray<RawStreamEntry>, RedisError>;
   readonly xautoclaim: (
     key: string,
     group: string,
     consumer: string,
-    minIdle: Duration.DurationInput,
+    minIdle: Duration.Input,
     options?: { readonly start?: string; readonly count?: number },
   ) => Effect.Effect<XAutoclaimResult, RedisError>;
   readonly xinfoStream: (key: string) => Effect.Effect<Record<string, string>, RedisError>;
@@ -281,13 +279,14 @@ export interface RedisService {
       key: string,
       group: string,
       consumer: string,
-      options: { readonly minIdle: Duration.DurationInput; readonly count?: number },
+      options: { readonly minIdle: Duration.Input; readonly count?: number },
     ) => Effect.Effect<ReadonlyArray<RawStreamEntry>, RedisError>;
   };
 }
 
 const toDecodeError = Effect.mapError(
-  (error: ParseResult.ParseError) => new DecodeError({ message: error.message, cause: error }),
+  (error: { readonly message: string }) =>
+    new DecodeError({ message: error.message, cause: error }),
 );
 
 const isBusyGroup = (e: RedisError): boolean =>
@@ -297,22 +296,26 @@ const isBusyGroup = (e: RedisError): boolean =>
 // ConnectionError so command/decode errors (WRONGTYPE, NOGROUP, a poison entry) surface, not loop.
 const reconnectSchedule = Schedule.exponential("200 millis").pipe(
   Schedule.jittered,
-  Schedule.union(Schedule.spaced("30 seconds")),
-  Schedule.whileInput((e: RedisError) => e._tag === "ConnectionError"),
+  Schedule.either(Schedule.spaced("30 seconds")),
+  // v4 has no `whileInput`: halt the schedule (via its Error channel) when the failure isn't a
+  // ConnectionError, so command/decode errors (WRONGTYPE, NOGROUP, a poison entry) surface, not loop.
+  Schedule.tapInput((e: RedisError) =>
+    e._tag === "ConnectionError" ? Effect.void : Effect.fail(e),
+  ),
 );
 
 const defaultBlock = Duration.seconds(5);
 
 // Never block forever: a finite round-trip lets the consumer observe interruption and surface a dead
 // connection for Stream.retry. 0 / sub-1ms / undefined fall back to the default.
-const consumerBlock = (block: Duration.DurationInput | undefined): Duration.DurationInput =>
-  block !== undefined && Duration.toMillis(Duration.decode(block)) >= 1 ? block : defaultBlock;
+const consumerBlock = (block: Duration.Input | undefined): Duration.Input =>
+  block !== undefined && Duration.toMillis(block) >= 1 ? block : defaultBlock;
 
 const makeRedis = (conn: ConnectionService): RedisService => {
-  const subscribe = ((channel: string, schema?: Schema.Schema<unknown, unknown>) => {
+  const subscribe = ((channel: string, schema?: Schema.Codec<unknown, unknown>) => {
     const base = conn.subscribe([channel]);
     if (schema === undefined) return Stream.map(base, (m) => m.message);
-    const decode = Schema.decode(Schema.parseJson(schema));
+    const decode = Schema.decodeEffect(Schema.fromJsonString(schema));
     return Stream.mapEffect(base, (m) => decode(m.message).pipe(toDecodeError));
   }) as RedisService["subscribe"];
 
@@ -322,22 +325,26 @@ const makeRedis = (conn: ConnectionService): RedisService => {
       const block = consumerBlock(options?.block);
       const seed = options?.from ?? "$";
       const pump = (c: ConnectionService, lastIdRef: Ref.Ref<string>) =>
-        Stream.repeatEffectChunk(
-          Ref.get(lastIdRef).pipe(
-            Effect.flatMap((lastId) =>
-              c
-                .send(Cmd.xread([[key, lastId]], { count, block }))
-                .pipe(Effect.flatMap(decodeStreamReads)),
+        // v4 has no `repeatEffectChunk`: `forever` re-runs the per-read stream; the XREAD BLOCK
+        // inside the effect is what paces the loop, so this never busy-spins on empty reads.
+        Stream.forever(
+          Stream.fromArrayEffect(
+            Ref.get(lastIdRef).pipe(
+              Effect.flatMap((lastId) =>
+                c
+                  .send(Cmd.xread([[key, lastId]], { count, block }))
+                  .pipe(Effect.flatMap(decodeStreamReads)),
+              ),
+              Effect.flatMap((reads) => {
+                const entries = reads.flatMap(([, es]) => es);
+                const last = entries[entries.length - 1];
+                // $ holds until the first non-empty read (a timeout keeps it — nothing arrived to
+                // miss); after that, advance to the last id so a re-read never re-anchors and drops.
+                return last === undefined
+                  ? Effect.succeed<ReadonlyArray<RawStreamEntry>>([])
+                  : Ref.set(lastIdRef, last.id).pipe(Effect.as(entries));
+              }),
             ),
-            Effect.flatMap((reads) => {
-              const entries = reads.flatMap(([, es]) => es);
-              const last = entries[entries.length - 1];
-              // $ holds until the first non-empty read (a timeout keeps it — nothing arrived to
-              // miss); after that, advance to the last id so a re-read never re-anchors and drops.
-              return last === undefined
-                ? Effect.succeed(Chunk.empty<RawStreamEntry>())
-                : Ref.set(lastIdRef, last.id).pipe(Effect.as(Chunk.fromIterable(entries)));
-            }),
           ),
         );
       // The lastId Ref lives outside the retried stream, so a reconnect resumes where it left off.
@@ -368,10 +375,12 @@ const makeRedis = (conn: ConnectionService): RedisService => {
         Effect.asVoid,
       );
       const pump = (c: ConnectionService) =>
-        Stream.repeatEffectChunk(
-          c.send(Cmd.xreadGroup(group, consumer, [[key, ">"]], { count, block })).pipe(
-            Effect.flatMap(decodeStreamReads),
-            Effect.map((reads) => Chunk.fromIterable(reads.flatMap(([, es]) => es).map(toEntry))),
+        Stream.forever(
+          Stream.fromArrayEffect(
+            c.send(Cmd.xreadGroup(group, consumer, [[key, ">"]], { count, block })).pipe(
+              Effect.flatMap(decodeStreamReads),
+              Effect.map((reads) => reads.flatMap(([, es]) => es).map(toEntry)),
+            ),
           ),
         );
       return Stream.unwrap(
@@ -550,21 +559,23 @@ const traceConnection = (conn: ConnectionService): ConnectionService => ({
 // Subscriptions are long-lived, so the deadline wraps only send/pipeline.
 const timeoutConnection = (
   conn: ConnectionService,
-  duration: Duration.DurationInput,
+  duration: Duration.Input,
 ): ConnectionService => ({
   send: (command) =>
     conn.send(command).pipe(
-      Effect.timeoutFail({
+      Effect.timeoutOrElse({
         duration,
-        onTimeout: () =>
-          new TimeoutError({ message: "redis command timed out", command: command.name }),
+        orElse: () =>
+          Effect.fail(
+            new TimeoutError({ message: "redis command timed out", command: command.name }),
+          ),
       }),
     ),
   pipeline: (commands) =>
     conn.pipeline(commands).pipe(
-      Effect.timeoutFail({
+      Effect.timeoutOrElse({
         duration,
-        onTimeout: () => new TimeoutError({ message: "redis pipeline timed out" }),
+        orElse: () => Effect.fail(new TimeoutError({ message: "redis pipeline timed out" })),
       }),
     ),
   subscribe: conn.subscribe,
@@ -575,12 +586,12 @@ const timeoutConnection = (
 
 export interface RefOptions {
   readonly prefix: string;
-  readonly ttl?: Duration.DurationInput;
+  readonly ttl?: Duration.Input;
 }
 
 /** Per-write TTL control: `ttl` overrides the configured TTL for this write; `keepTtl` leaves it untouched. */
 export interface WriteOptions {
-  readonly ttl?: Duration.DurationInput;
+  readonly ttl?: Duration.Input;
   readonly keepTtl?: boolean;
 }
 
@@ -603,7 +614,7 @@ export interface RedisRef<A> {
 const restampTtl = (
   r: RedisService,
   key: string,
-  configured: Duration.DurationInput | undefined,
+  configured: Duration.Input | undefined,
   opts?: WriteOptions,
 ): Effect.Effect<void, RedisError> => {
   if (opts?.keepTtl) return Effect.void;
@@ -623,7 +634,7 @@ export interface RedisSetRef<A> {
   readonly members: Effect.Effect<ReadonlyArray<A>, RedisError, Redis>;
   readonly has: (value: A) => Effect.Effect<boolean, RedisError, Redis>;
   readonly size: Effect.Effect<number, RedisError, Redis>;
-  readonly expire: (duration: Duration.DurationInput) => Effect.Effect<boolean, RedisError, Redis>;
+  readonly expire: (duration: Duration.Input) => Effect.Effect<boolean, RedisError, Redis>;
   readonly ttl: Effect.Effect<Option.Option<Duration.Duration>, RedisError, Redis>;
   readonly delete: Effect.Effect<boolean, RedisError, Redis>;
 }
@@ -653,7 +664,7 @@ export interface RedisZSetRef<A> {
     stop: number,
   ) => Effect.Effect<ReadonlyArray<readonly [A, number]>, RedisError, Redis>;
   readonly size: Effect.Effect<number, RedisError, Redis>;
-  readonly expire: (duration: Duration.DurationInput) => Effect.Effect<boolean, RedisError, Redis>;
+  readonly expire: (duration: Duration.Input) => Effect.Effect<boolean, RedisError, Redis>;
   readonly ttl: Effect.Effect<Option.Option<Duration.Duration>, RedisError, Redis>;
   readonly delete: Effect.Effect<boolean, RedisError, Redis>;
 }
@@ -672,7 +683,7 @@ export interface RedisHashRef<A> {
   readonly remove: (...fields: ReadonlyArray<string>) => Effect.Effect<number, RedisError, Redis>;
   readonly keys: Effect.Effect<ReadonlyArray<string>, RedisError, Redis>;
   readonly size: Effect.Effect<number, RedisError, Redis>;
-  readonly expire: (duration: Duration.DurationInput) => Effect.Effect<boolean, RedisError, Redis>;
+  readonly expire: (duration: Duration.Input) => Effect.Effect<boolean, RedisError, Redis>;
   readonly ttl: Effect.Effect<Option.Option<Duration.Duration>, RedisError, Redis>;
   readonly delete: Effect.Effect<boolean, RedisError, Redis>;
 }
@@ -725,11 +736,11 @@ export interface RedisStreamRef<A> {
 }
 
 export interface ScriptOptions<A, I> {
-  readonly result: Schema.Schema<A, I>;
+  readonly result: Schema.Codec<A, I>;
   readonly lua: string;
 }
 
-export class Redis extends Context.Tag("redfx/Redis")<Redis, RedisService>() {}
+export class Redis extends Context.Service<Redis, RedisService>()("redfx/Redis") {}
 
 export namespace Redis {
   export const layer: Layer.Layer<Redis, never, RedisConnection> = Layer.effect(
@@ -738,10 +749,10 @@ export namespace Redis {
   );
 
   /** A Schema-typed key family: `ref(Schema, { prefix, ttl })(id)` with encode/decode/TTL folded in. */
-  export const ref = <A, I>(schema: Schema.Schema<A, I>, options: RefOptions) => {
-    const codec = Schema.parseJson(schema);
-    const encode = Schema.encode(codec);
-    const decode = Schema.decode(codec);
+  export const ref = <A, I>(schema: Schema.Codec<A, I>, options: RefOptions) => {
+    const codec = Schema.fromJsonString(schema);
+    const encode = Schema.encodeEffect(codec);
+    const decode = Schema.decodeEffect(codec);
     return (id: string): RedisRef<A> => {
       const key = `${options.prefix}:${id}`;
       const decodeSome = (s: string) => decode(s).pipe(toDecodeError, Effect.asSome);
@@ -788,10 +799,10 @@ export namespace Redis {
 
   /** A Schema-typed set: `setOf(Schema, { prefix, ttl })(id)`. Members encode/decode as one JSON
    *  value each; a configured `ttl` is re-stamped after each mutating write (see `restampTtl`). */
-  export const setOf = <A, I>(schema: Schema.Schema<A, I>, options: RefOptions) => {
-    const codec = Schema.parseJson(schema);
-    const encode = Schema.encode(codec);
-    const decode = Schema.decode(codec);
+  export const setOf = <A, I>(schema: Schema.Codec<A, I>, options: RefOptions) => {
+    const codec = Schema.fromJsonString(schema);
+    const encode = Schema.encodeEffect(codec);
+    const decode = Schema.decodeEffect(codec);
     return (id: string): RedisSetRef<A> => {
       const key = `${options.prefix}:${id}`;
       const encodeAll = (values: ReadonlyArray<A>) =>
@@ -836,10 +847,10 @@ export namespace Redis {
 
   /** A Schema-typed sorted set (leaderboard): `sortedSet(Schema, { prefix, ttl })(id)`. Members
    *  encode/decode via Schema; scores are plain numbers. Configured `ttl` re-stamped per write. */
-  export const sortedSet = <A, I>(schema: Schema.Schema<A, I>, options: RefOptions) => {
-    const codec = Schema.parseJson(schema);
-    const encode = Schema.encode(codec);
-    const decode = Schema.decode(codec);
+  export const sortedSet = <A, I>(schema: Schema.Codec<A, I>, options: RefOptions) => {
+    const codec = Schema.fromJsonString(schema);
+    const encode = Schema.encodeEffect(codec);
+    const decode = Schema.decodeEffect(codec);
     return (id: string): RedisZSetRef<A> => {
       const key = `${options.prefix}:${id}`;
       const decodeMember = (m: string) => decode(m).pipe(toDecodeError);
@@ -907,10 +918,10 @@ export namespace Redis {
 
   /** A Schema-typed hash: `hashOf(Schema, { prefix, ttl })(id)`. A `field(string) → value(A)` map;
    *  each value encodes/decodes via Schema, fields stay raw strings. Configured `ttl` re-stamped per write. */
-  export const hashOf = <A, I>(schema: Schema.Schema<A, I>, options: RefOptions) => {
-    const codec = Schema.parseJson(schema);
-    const encode = Schema.encode(codec);
-    const decode = Schema.decode(codec);
+  export const hashOf = <A, I>(schema: Schema.Codec<A, I>, options: RefOptions) => {
+    const codec = Schema.fromJsonString(schema);
+    const encode = Schema.encodeEffect(codec);
+    const decode = Schema.decodeEffect(codec);
     return (id: string): RedisHashRef<A> => {
       const key = `${options.prefix}:${id}`;
       return {
@@ -964,12 +975,12 @@ export namespace Redis {
    *  under the single field `"d"`; `read`/`group`/`consume` deliver decoded entries as a `Stream`,
    *  `range`/`revRange` page history. Reach for `r.xadd` to write raw multi-field entries. */
   export const stream = <A, I>(
-    schema: Schema.Schema<A, I>,
+    schema: Schema.Codec<A, I>,
     options: { readonly prefix: string },
   ) => {
-    const codec = Schema.parseJson(schema);
-    const encode = Schema.encode(codec);
-    const decode = Schema.decode(codec);
+    const codec = Schema.fromJsonString(schema);
+    const encode = Schema.encodeEffect(codec);
+    const decode = Schema.decodeEffect(codec);
     return (id: string): RedisStreamRef<A> => {
       const key = `${options.prefix}:${id}`;
       // A missing "d" decodes the empty string, which fails deterministically — matching `ref.get`.
@@ -1002,9 +1013,9 @@ export namespace Redis {
           ids.length === 0 ? Effect.succeed(0) : Effect.flatMap(Redis, (r) => r.xdel(key, ...ids)),
         drop: Effect.flatMap(Redis, (r) => r.del(key)).pipe(Effect.map((n) => n > 0)),
         read: (opts) =>
-          Redis.use((r) => r.streams.read(key, opts)).pipe(Stream.mapEffect(decodeTyped)),
+          Redis.useStream((r) => r.streams.read(key, opts)).pipe(Stream.mapEffect(decodeTyped)),
         group: (opts) =>
-          Redis.use((r) => r.streams.readGroup(key, opts)).pipe(
+          Redis.useStream((r) => r.streams.readGroup(key, opts)).pipe(
             Stream.mapEffect((e) =>
               decodeMessage(e.fields).pipe(
                 Effect.map((message) => ({ id: e.id, message, ack: e.ack })),
@@ -1012,11 +1023,11 @@ export namespace Redis {
             ),
           ),
         consume: (opts, handler) =>
-          Redis.use((r) => r.streams.readGroup(key, opts)).pipe(
+          Redis.useStream((r) => r.streams.readGroup(key, opts)).pipe(
             Stream.mapEffect((e) =>
               decodeMessage(e.fields).pipe(
                 Effect.flatMap((message) =>
-                  handler(message).pipe(Effect.zipRight(e.ack), Effect.as(message)),
+                  handler(message).pipe(Effect.andThen(e.ack), Effect.as(message)),
                 ),
               ),
             ),
@@ -1026,7 +1037,7 @@ export namespace Redis {
   };
 
   export const script = <A, I>(options: ScriptOptions<A, I>) => {
-    const decodeResult = Schema.decodeUnknown(options.result);
+    const decodeResult = Schema.decodeUnknownEffect(options.result);
     const isNoScript = (e: RedisError): boolean =>
       e._tag === "CommandError" && (e.code === "NOSCRIPT" || e.message.includes("NOSCRIPT"));
     let cachedSha: string | undefined;
@@ -1057,20 +1068,21 @@ export namespace Redis {
       });
   };
 
-  /** Open a `Stream` from the `Redis` service, e.g. `Redis.use((r) => r.subscribe(ch, Schema))`. */
-  export const use = <A, E, R>(
+  /** Open a `Stream` from the `Redis` service, e.g. `Redis.useStream((r) => r.subscribe(ch, Schema))`.
+   *  Named `useStream` (not `use`) because v4's `Context.Service` reserves `.use` for `Effect`s. */
+  export const useStream = <A, E, R>(
     f: (redis: RedisService) => Stream.Stream<A, E, R>,
   ): Stream.Stream<A, E, R | Redis> => Stream.unwrap(Effect.map(Redis, f));
 }
 
 export const layerConnection = (
   acquire: Effect.Effect<ConnectionService, ConnectionError, Scope.Scope>,
-  options?: { readonly commandTimeout?: Duration.DurationInput },
+  options?: { readonly commandTimeout?: Duration.Input },
 ): Layer.Layer<Redis, ConnectionError> => {
   const timeout = options?.commandTimeout;
   const connection =
     timeout === undefined
       ? acquire
       : acquire.pipe(Effect.map((conn) => timeoutConnection(conn, timeout)));
-  return Redis.layer.pipe(Layer.provide(Layer.scoped(RedisConnection, connection)));
+  return Redis.layer.pipe(Layer.provide(Layer.effect(RedisConnection, connection)));
 };

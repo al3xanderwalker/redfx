@@ -11,11 +11,12 @@ import {
   type RespValue,
 } from "@redfx/core";
 import {
+  Cause,
   type Config,
-  type ConfigError,
   type Duration,
   Effect,
   Layer,
+  Queue,
   type Scope,
   Stream,
 } from "effect";
@@ -35,13 +36,13 @@ export interface ClientConfig {
   readonly url?: string;
   readonly options?: RedisOptions;
   /** Effect-level per-command deadline; on expiry the command fails with `TimeoutError`. */
-  readonly commandTimeout?: Duration.DurationInput;
+  readonly commandTimeout?: Duration.Input;
 }
 
 export interface ClusterConfig {
   readonly nodes: ReadonlyArray<ClusterNode>;
   readonly options?: ClusterOptions;
-  readonly commandTimeout?: Duration.DurationInput;
+  readonly commandTimeout?: Duration.Input;
 }
 
 const DEFAULTS: RedisOptions = {
@@ -175,12 +176,20 @@ const pipeline =
 const subscribeStream =
   (acquire: Effect.Effect<RedisLike, ConnectionError, Scope.Scope>) =>
   (channels: ReadonlyArray<string>): Stream.Stream<PushMessage, RedisError> =>
-    Stream.asyncScoped<PushMessage, RedisError>((emit) =>
+    // v4 has no `asyncScoped`: `Stream.callback` hands us a Queue; push with the unsafe (sync) ops
+    // since ioredis' event callbacks aren't Effects. The stream provides the Scope `acquire` needs,
+    // so the subscriber connection closes when the consumer's scope does.
+    Stream.callback<PushMessage, RedisError>((queue) =>
       Effect.gen(function* () {
         const sub = yield* acquire;
-        sub.on("message", (channel: string, message: string) => emit.single({ channel, message }));
+        sub.on("message", (channel: string, message: string) =>
+          Queue.offerUnsafe(queue, { channel, message }),
+        );
         sub.on("error", (cause) =>
-          emit.fail(new ConnectionError({ message: "ioredis: subscriber error", cause })),
+          Queue.failCauseUnsafe(
+            queue,
+            Cause.fail(new ConnectionError({ message: "ioredis: subscriber error", cause })),
+          ),
         );
         yield* Effect.tryPromise({
           try: () => sub.subscribe(...channels),
@@ -194,7 +203,7 @@ const dedicatedStream =
     acquire: Effect.Effect<RedisLike, ConnectionError, Scope.Scope>,
   ): ConnectionService["dedicated"] =>
   (f) =>
-    Stream.unwrapScoped(
+    Stream.unwrap(
       Effect.gen(function* () {
         const client = yield* acquire;
         // Force the socket down first (LIFO) so a blocking read aborts at once, not after quit() waits it out.
@@ -234,8 +243,8 @@ export namespace IoRedis {
   export const layerConfig = (
     url: Config.Config<string>,
     config?: Omit<ClientConfig, "url">,
-  ): Layer.Layer<Redis, ConnectionError | ConfigError.ConfigError> =>
-    Layer.unwrapEffect(Effect.map(url, (resolved) => layer({ ...config, url: resolved })));
+  ): Layer.Layer<Redis, ConnectionError | Config.ConfigError> =>
+    Layer.unwrap(Effect.map(url, (resolved) => layer({ ...config, url: resolved })));
 
   /** Pools `size` command connections; pub/sub still uses a dedicated connection. */
   export const layerPooled = (

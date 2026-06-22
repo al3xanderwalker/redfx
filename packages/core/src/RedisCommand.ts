@@ -11,16 +11,16 @@ export const make = (name: string, ...args: ReadonlyArray<string | Uint8Array>):
 });
 
 /** Whole seconds for `EX`/`EXPIRE`, floored at 1: `SET ... EX 0` errors, and `EXPIRE key 0` would delete the key. */
-export const expirySeconds = (d: Duration.DurationInput): string =>
-  String(Math.max(1, Math.ceil(Duration.toSeconds(Duration.decode(d)))));
+export const expirySeconds = (d: Duration.Input): string =>
+  String(Math.max(1, Math.ceil(Duration.toSeconds(d))));
 
-const expiryMillis = (d: Duration.DurationInput): string =>
-  String(Math.max(1, Math.ceil(Duration.toMillis(Duration.decode(d)))));
+const expiryMillis = (d: Duration.Input): string =>
+  String(Math.max(1, Math.ceil(Duration.toMillis(d))));
 
 /** Whole millis floored at 0 — for `BLOCK`/`IDLE`/min-idle, where `0` is valid (block forever / no
  *  idle floor), unlike `expirySeconds` which floors at 1. */
-const wholeMillis = (d: Duration.DurationInput): string =>
-  String(Math.max(0, Math.floor(Duration.toMillis(Duration.decode(d)))));
+const wholeMillis = (d: Duration.Input): string =>
+  String(Math.max(0, Math.floor(Duration.toMillis(d))));
 
 export interface TrimArgs {
   readonly maxLen: number;
@@ -33,12 +33,12 @@ export const trimArgs = (opts: TrimArgs): ReadonlyArray<string> =>
 
 export interface XReadArgs {
   readonly count?: number;
-  readonly block?: Duration.DurationInput;
+  readonly block?: Duration.Input;
 }
 
 export interface SetCommandOptions {
-  readonly ex?: Duration.DurationInput;
-  readonly px?: Duration.DurationInput;
+  readonly ex?: Duration.Input;
+  readonly px?: Duration.Input;
   readonly keepTtl?: boolean;
 }
 
@@ -86,7 +86,7 @@ export const Cmd = {
   decr: (key: string): RedisCommand => make("DECR", key),
   incrBy: (key: string, by: number): RedisCommand => make("INCRBY", key, String(by)),
   decrBy: (key: string, by: number): RedisCommand => make("DECRBY", key, String(by)),
-  expire: (key: string, ttl: Duration.DurationInput): RedisCommand =>
+  expire: (key: string, ttl: Duration.Input): RedisCommand =>
     make("EXPIRE", key, expirySeconds(ttl)),
   ttl: (key: string): RedisCommand => make("TTL", key),
   mget: (...keys: ReadonlyArray<string>): RedisCommand => ({ name: "MGET", args: keys }),
@@ -222,7 +222,7 @@ export const Cmd = {
       readonly end?: string;
       readonly count: number;
       readonly consumer?: string;
-      readonly idle?: Duration.DurationInput;
+      readonly idle?: Duration.Input;
     },
   ): RedisCommand => {
     const args = [key, group];
@@ -235,7 +235,7 @@ export const Cmd = {
     key: string,
     group: string,
     consumer: string,
-    minIdle: Duration.DurationInput,
+    minIdle: Duration.Input,
     ids: ReadonlyArray<string>,
   ): RedisCommand => ({
     name: "XCLAIM",
@@ -245,7 +245,7 @@ export const Cmd = {
     key: string,
     group: string,
     consumer: string,
-    minIdle: Duration.DurationInput,
+    minIdle: Duration.Input,
     opts?: { readonly start?: string; readonly count?: number },
   ): RedisCommand => {
     const args = [key, group, consumer, wholeMillis(minIdle), opts?.start ?? "0-0"];

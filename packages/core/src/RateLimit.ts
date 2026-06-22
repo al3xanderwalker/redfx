@@ -4,7 +4,7 @@ import type { RedisError } from "./RedisError.js";
 
 export interface RateLimitOptions {
   /** Sub-second windows floor to 1s (server-clock resolution). */
-  readonly window: Duration.DurationInput;
+  readonly window: Duration.Input;
   readonly max: number;
   /** Counters live at `{prefix}:{identifier}:{bucket}`. Default `"rl"`. */
   readonly prefix?: string;
@@ -50,10 +50,10 @@ if remaining < 0 then remaining = 0 end
 return {1, remaining, reset}
 `;
 
-const Result = Schema.Tuple(Schema.Number, Schema.Number, Schema.Number);
+const Result = Schema.Tuple([Schema.Number, Schema.Number, Schema.Number]);
 
-const windowSeconds = (w: Duration.DurationInput): number =>
-  Math.max(1, Math.ceil(Duration.toMillis(Duration.decode(w)) / 1000));
+const windowSeconds = (w: Duration.Input): number =>
+  Math.max(1, Math.ceil(Duration.toMillis(w) / 1000));
 
 export namespace RateLimit {
   /** Builds the Lua once (SHA cached); `check` returns a decision for the caller to act on. */

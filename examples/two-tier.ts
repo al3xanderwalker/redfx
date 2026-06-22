@@ -6,7 +6,7 @@ import { RedisCache } from "@redfx/core";
 import { IoRedis } from "@redfx/ioredis";
 import { Duration, Effect, Schema } from "effect";
 
-const Flags = Schema.Record({ key: Schema.String, value: Schema.Boolean });
+const Flags = Schema.Record(Schema.String, Schema.Boolean);
 declare const loadFlags: (tenant: string) => Effect.Effect<typeof Flags.Type>;
 
 const buildFlagCache = RedisCache.makeTiered({

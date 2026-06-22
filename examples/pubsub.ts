@@ -13,7 +13,7 @@ const SseEvent = Schema.Struct({
 });
 
 const userEvents = (topic: string, userId: string) =>
-  Redis.use((redis) => redis.subscribe("sse:events", SseEvent)).pipe(
+  Redis.useStream((redis) => redis.subscribe("sse:events", SseEvent)).pipe(
     Stream.filter((e) => e.topic === topic && e.userId === userId),
   );
 

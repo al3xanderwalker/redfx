@@ -12,11 +12,12 @@ import {
 } from "@redfx/core";
 import { RedisClient } from "bun";
 import {
+  Cause,
   type Config,
-  type ConfigError,
   type Duration,
   Effect,
   Layer,
+  Queue,
   type Scope,
   Stream,
 } from "effect";
@@ -27,7 +28,7 @@ export interface ClientConfig {
   readonly url?: string;
   readonly options?: BunRedisOptions;
   /** Effect-level per-command deadline; on expiry the command fails with `TimeoutError`. */
-  readonly commandTimeout?: Duration.DurationInput;
+  readonly commandTimeout?: Duration.Input;
 }
 
 const textDecoder = new TextDecoder();
@@ -93,7 +94,9 @@ const pipeline =
 const subscribeStream =
   (config: ClientConfig) =>
   (channels: ReadonlyArray<string>): Stream.Stream<PushMessage, RedisError> =>
-    Stream.asyncScoped<PushMessage, RedisError>((emit) =>
+    // v4 has no `asyncScoped`: `Stream.callback` hands us a Queue; push with the unsafe (sync) ops
+    // since bun's pub/sub callbacks aren't Effects.
+    Stream.callback<PushMessage, RedisError>((queue) =>
       Effect.gen(function* () {
         const sub = yield* makeClient(config);
         // Surface an unexpected drop; the finalizer (runs before our own close) suppresses teardown.
@@ -105,9 +108,15 @@ const subscribeStream =
         );
         sub.onclose = (cause) => {
           if (active)
-            emit.fail(new ConnectionError({ message: "bun: subscriber connection closed", cause }));
+            Queue.failCauseUnsafe(
+              queue,
+              Cause.fail(
+                new ConnectionError({ message: "bun: subscriber connection closed", cause }),
+              ),
+            );
         };
-        const listener = (message: string, channel: string) => emit.single({ channel, message });
+        const listener = (message: string, channel: string) =>
+          Queue.offerUnsafe(queue, { channel, message });
         yield* Effect.forEach(channels, (channel) =>
           Effect.tryPromise({
             try: () => sub.subscribe(channel, listener),
@@ -127,7 +136,7 @@ const failFastConfig = (config: ClientConfig): ClientConfig => ({
 const dedicatedStream =
   (config: ClientConfig): ConnectionService["dedicated"] =>
   (f) =>
-    Stream.unwrapScoped(
+    Stream.unwrap(
       Effect.map(makeClient(failFastConfig(config)), (client) =>
         f({
           send: send(client),
@@ -160,8 +169,8 @@ export namespace BunRedis {
   export const layerConfig = (
     url: Config.Config<string>,
     config?: Omit<ClientConfig, "url">,
-  ): Layer.Layer<Redis, ConnectionError | ConfigError.ConfigError> =>
-    Layer.unwrapEffect(Effect.map(url, (resolved) => layer({ ...config, url: resolved })));
+  ): Layer.Layer<Redis, ConnectionError | Config.ConfigError> =>
+    Layer.unwrap(Effect.map(url, (resolved) => layer({ ...config, url: resolved })));
 
   /** Pools `size` command connections; pub/sub uses a dedicated connection. */
   export const layerPooled = (

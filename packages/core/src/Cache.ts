@@ -14,19 +14,19 @@ import { DecodeError, type RedisError, TimeoutError } from "./RedisError.js";
 
 export interface StampedeOptions {
   /** Lock lifetime; a SAFETY bound that must exceed the worst-case lookup. Default `"10 seconds"`. */
-  readonly lockTtl?: Duration.DurationInput;
+  readonly lockTtl?: Duration.Input;
   /** How long a waiter polls before giving up. Default = `lockTtl`. */
-  readonly waitTimeout?: Duration.DurationInput;
+  readonly waitTimeout?: Duration.Input;
   /** Base poll interval; jittered on each round. Default `"75 millis"`. */
-  readonly pollInterval?: Duration.DurationInput;
+  readonly pollInterval?: Duration.Input;
   /** On wait timeout: `"compute"` (degrade to a lock-free lookup) or `"fail"`. Default `"compute"`. */
   readonly onTimeout?: "compute" | "fail";
 }
 
 export interface CacheOptions<A, I, E, R> {
-  readonly schema: Schema.Schema<A, I>;
+  readonly schema: Schema.Codec<A, I>;
   readonly prefix: string;
-  readonly ttl: Duration.DurationInput;
+  readonly ttl: Duration.Input;
   readonly lookup: (key: string) => Effect.Effect<A, E, R>;
   /** Cross-instance single-flight on a miss. `true` uses the defaults. */
   readonly stampede?: boolean | StampedeOptions;
@@ -34,7 +34,7 @@ export interface CacheOptions<A, I, E, R> {
 
 export interface TieredOptions<A, I, E, R> extends CacheOptions<A, I, E, R> {
   /** In-process L1 in front of the Redis L2. Keep `memory.ttl <= ttl`. */
-  readonly memory: { readonly capacity: number; readonly ttl: Duration.DurationInput };
+  readonly memory: { readonly capacity: number; readonly ttl: Duration.Input };
 }
 
 export interface RedisCacheHandle<A, E, R> {
@@ -51,16 +51,15 @@ export interface TieredCacheHandle<A, E> {
   readonly refresh: (key: string) => Effect.Effect<A, E | RedisError>;
 }
 
-const toMillis = (d: Duration.DurationInput): number => Duration.toMillis(Duration.decode(d));
+const toMillis = (d: Duration.Input): number => Duration.toMillis(d);
 
 // floored at 1: a `PX 0` lock would error
-const millisString = (d: Duration.DurationInput): string =>
-  String(Math.max(1, Math.ceil(toMillis(d))));
+const millisString = (d: Duration.Input): string => String(Math.max(1, Math.ceil(toMillis(d))));
 
 interface ResolvedStampede {
-  readonly lockTtl: Duration.DurationInput;
-  readonly waitTimeout: Duration.DurationInput;
-  readonly pollInterval: Duration.DurationInput;
+  readonly lockTtl: Duration.Input;
+  readonly waitTimeout: Duration.Input;
+  readonly pollInterval: Duration.Input;
   readonly onTimeout: "compute" | "fail";
 }
 
@@ -244,39 +243,39 @@ export namespace RedisCache {
         core.lookupAndStore(key).pipe(Effect.provideService(Redis, svc), Effect.provide(env));
 
       // skip our own messages; reconnect with capped backoff if the sub drops
-      const listener = Redis.use((r) => r.subscribe(channel, InvMsg)).pipe(
+      const listener = Redis.useStream((r) => r.subscribe(channel, InvMsg)).pipe(
         Stream.filter((m) => m.i !== instanceId),
-        Stream.runForEach((m) => l1.invalidate(m.k)),
+        Stream.runForEach((m) => Cache.invalidate(l1, m.k)),
         Effect.provideService(Redis, svc),
         Effect.retry(
           Schedule.exponential("200 millis").pipe(
             Schedule.jittered,
-            Schedule.union(Schedule.spaced("30 seconds")),
+            Schedule.either(Schedule.spaced("30 seconds")),
           ),
         ),
-        Effect.catchAll((e) =>
+        Effect.catch((e) =>
           Effect.logError(`redfx cache "${options.prefix}": invalidation listener stopped`, e),
         ),
       );
       yield* Effect.forkScoped(listener);
 
       return {
-        get: (key) => l1.get(key),
+        get: (key) => Cache.get(l1, key),
         set: (key, value) =>
           core.store(key, value).pipe(
             Effect.provideService(Redis, svc),
-            Effect.flatMap(() => l1.set(key, value)),
+            Effect.flatMap(() => Cache.set(l1, key, value)),
             Effect.flatMap(() => publishInv(key)),
           ),
         invalidate: (key) =>
           core.del(key).pipe(
             Effect.provideService(Redis, svc),
-            Effect.flatMap(() => l1.invalidate(key)),
+            Effect.flatMap(() => Cache.invalidate(l1, key)),
             Effect.flatMap(() => publishInv(key)),
           ),
         refresh: (key) =>
           refreshOne(key).pipe(
-            Effect.tap((v) => l1.set(key, v)),
+            Effect.tap((v) => Cache.set(l1, key, v)),
             Effect.tap(() => publishInv(key)),
           ),
       };

@@ -1,118 +1,92 @@
-# Effect v4 support — compatibility spike
+# Effect v4 port — verified
 
-> Branch: `spike/effect-v4`. This is a **throwaway spike**, not a migration. It exists to
-> turn "what would it take to support Effect v4" into verified compiler facts.
+> Branch: `spike/effect-v4`. This started as a throwaway probe; it is now a **complete, verified
+> port** of redfx to `effect@4.0.0-beta.85`. `main` is untouched.
+
+## Result
+
+- `tsc -p tsconfig.json --noEmit`: **0 errors** across all packages, examples, and tests
+  (was 492 on first contact with v4).
+- `bun test test/` (live Redis via testcontainers): **138 pass, 3 skip, 0 fail**.
+  The 3 skips are `ioredis-cluster.test.ts`, gated on cluster nodes being configured — pre-existing,
+  not v4-related.
+
+This proves the port is correct at runtime, not just type-level.
 
 ## Status of Effect v4 (June 2026)
 
-- v4 is **beta only** — latest is `effect@4.0.0-beta.85`. The Effect team's own guidance:
-  *"If you're running Effect in production, v3 remains our recommended choice."*
-- APIs (especially **Schema**) still change between beta releases. Anything ported to the v4
-  Schema today is likely rework at RC. **Do not ship a v4 port until v4 reaches RC.**
+v4 is **beta** (`effect@4.0.0-beta.85`); the Effect team still recommends v3 for production and
+Schema's API can shift between betas. So: this branch is the reference, **don't ship until v4 RC**.
+When shipping, bump redfx to a new major with `peerDependencies: { effect: "^4.0.0" }` and keep the
+v3 line on a `2.x` maintenance branch.
 
-## How this spike was run
+## How it was verified
 
-1. `pnpm add -D -w effect@4.0.0-beta.85`
-2. Pointed every workspace package's `effect` devDependency at `4.0.0-beta.85` (otherwise
-   `@redfx/core` resolves its own `effect@3.21.3` and you get false v3-vs-v4 type-identity
-   errors — the first run reported 518 errors, ~26 of which were pure cross-version noise).
-3. `./node_modules/.bin/tsc -p tsconfig.json --noEmit`
+1. Pinned every workspace package's `effect` dep to `4.0.0-beta.85` (a single version everywhere —
+   a split install produces false v3-vs-v4 type-identity errors).
+2. Ported file-by-file, recompiling after each, using v4's installed `dist/*.d.ts` as the source of
+   truth for every replacement (not migration blogs — see "corrections" below).
+3. Ran the full runtime suite against a real Redis container.
 
-Result: **492 type errors** — but see below, the count is misleading.
+## The shape of the change
 
-## Can v3 and v4 be supported together?
+The error count was dominated by **cascades** from a few roots, not by breadth:
 
-Not from one source tree, and not via a single package with `effect: "^3 || ^4"` — the
-`Context.Tag`→`Service` and Schema changes are mutually exclusive at the type level.
-**Strategy: major-version split.** `@redfx/core@^3` peers `effect@^4`; keep the v3 line on a
-`2.x` maintenance branch. (Same model Effect itself uses for v3↔v4.) Optionally a second
-package name (`@redfx/core4`) if consumers need both installed at once during their own migration.
+- `internal/decode.ts` (~370 lines of `Effect`/`Option`) and `RespValue.ts` ported with **zero
+  changes** — the stable core didn't move.
+- Two `Context.Tag` → `Context.Service` definitions collapsed ~150 of the 262 core errors.
+- Schema was the only deep rewrite, and even it was mechanical once the right symbols were found.
 
-## The 492 errors are mostly cascades from a few root causes
+## Verified v4 mappings (what actually compiles + passes tests)
 
-| Area | Errors | Nature |
+| v3 | v4 | Notes |
 |---|---|---|
-| `packages/core` | 262 | mostly cascades from `Context.Tag` + Schema (see below) |
-| `test/` | 200 | downstream of core's broken public types + `Cause`/`Exit` shape |
-| `examples/` | 17 | `Schema.TaggedError`, `Schema.Struct` arity, downstream |
-| `packages/ioredis` | 7 | `Layer`/`Config`/`Stream` type identity |
-| `packages/bun` | 6 | same |
+| `Context.Tag("k")<Self,Shape>()` | `Context.Service<Self,Shape>()("k")` | key moves to 2nd call; the service still `extends Effect`, so `yield*`/`flatMap`/`.use` keep working |
+| `Schema.parseJson(s)` | `Schema.fromJsonString(s)` | |
+| `Schema.encode/decode(c)` | `Schema.encodeEffect/decodeEffect(c)` | error is `SchemaError`, not `ParseResult.ParseError` |
+| `Schema.decodeUnknown(s)` | `Schema.decodeUnknownEffect(s)` | |
+| `Schema.Schema<A,I>` | `Schema.Codec<A,I>` | `Schema<T>` is decoded-type-only now |
+| `Schema.Literal(a,b,…)` | `Schema.Literals([a,b,…])` | single-arg `Literal` unchanged |
+| `Schema.Record({key,value})` | `Schema.Record(key, value)` | positional |
+| `Schema.Tuple(a,b,c)` | `Schema.Tuple([a,b,c])` | array arg |
+| `Schema.TaggedError<S>()("T",f)` | `Schema.ErrorClass<S>("T")({ _tag: Schema.tag("T"), …f })` | |
+| `ParseResult` (top-level) | (gone) | use `SchemaError` / `Schema.*` |
+| `Schedule.union(s)` | `Schedule.either(s)` | **recur-if-either, MIN delay.** `both` is the intersection (MAX delay) — wrong here, and the runtime test caught it |
+| `Schedule.whileInput(p)` | `Schedule.tapInput((e) => p(e) ? Effect.void : Effect.fail(e))` | no direct `whileInput`; halt via the Error channel |
+| `Stream.repeatEffectChunk(eff)` | `Stream.forever(Stream.fromArrayEffect(eff))` | switch the per-iteration `Chunk` to an array |
+| `Stream.asyncScoped((emit)=>…)` | `Stream.callback((queue)=>…)` | push with `Queue.offerUnsafe`; fail with `Queue.failCauseUnsafe(q, Cause.fail(e))` |
+| `Stream.unwrapScoped` | `Stream.unwrap` | scope is implicit |
+| `Stream.runCollect` → `Chunk<A>` | → `Array<A>` | drop downstream `Chunk.toReadonlyArray` |
+| `Effect.catchAll` | `Effect.catch` | exported as `catch_ as catch` (no bare-name decl, but it exists) |
+| `Effect.timeoutFail({duration,onTimeout})` | `Effect.timeoutOrElse({duration, orElse: () => Effect.fail(...)})` | onTimeout returns a value → orElse returns an Effect |
+| `Effect.zipRight` | `Effect.andThen` | |
+| `Effect.either` | `Effect.result` | |
+| `Effect.fork` | `Effect.forkChild` | |
+| `Cause.failureOption` | `Cause.findErrorOption` | Cause is a flat reason-array in v4 |
+| `Layer.scoped` | `Layer.effect` | scope implicit |
+| `Layer.unwrapEffect` | `Layer.unwrap` | |
+| `ConfigError.ConfigError` | `Config.ConfigError` | no top-level `ConfigError` export |
+| `Duration.DurationInput` | `Duration.Input` | and `Duration.decode(d)` is gone — pass input straight to `toMillis`/`toSeconds` |
 
-### Verified GOOD news — the stable core ports unchanged
+### One public-API change forced by v4
 
-- **`internal/decode.ts` — 0 errors.** ~370 lines, every function returns
-  `Effect.Effect<…, DecodeError>`. It uses only the stable core (`Effect.succeed/fail/map/
-  flatMap/forEach/all`, `Option`), none of which changed. The Effect-dense decoder is portable.
-- **`RespValue.ts` — 0 errors** (pure TS).
-- `Effect.gen`, `Option`, `Ref`, `Chunk`, `Clock` usage: no breaks observed.
+`Redis.use` (redfx's Stream-opening helper) was renamed to **`Redis.useStream`** — v4's
+`Context.Service` reserves `.use` for `Effect`s, and the two signatures collide on the class's
+static side.
 
-### Root-cause breaks (the actual work), verified against v4 dist types
+## Corrections to my earlier (pre-port) guesses
 
-1. **Schema — full rewrite. The dominant cost.** In `Redis.ts` (the `ref`/`setOf`/zset/hash/
-   stream codecs), `Cache.ts`, `RateLimit.ts`, examples.
-   - `Schema.parseJson` — **removed** (TS2339, ~7 sites in `Redis.ts`).
-   - `Schema.decode` / `Schema.decodeUnknown` — **removed/renamed** (`Cache.ts:54`,
-     `RateLimit.ts:56`, `Redis.ts:1029`).
-   - `Schema.TaggedError` — **removed** (examples).
-   - `Schema.Schema<T>` now requires explicit type args; base param is `Top`; the RD/RE
-     (decode/encode requirement) split changes every codec signature (TS2314, TS2345 "not
-     assignable to `Top`", ~dozens of sites).
-   - `ParseResult` is **no longer a top-level `effect` export** (`Redis.ts:9`, TS2305) — moved
-     under the Schema namespace; cascades into every `Effect<A, ParseResult.ParseError, R>`.
-2. **Services — `Context.Tag` removed → `Context.Service`.** Only **2 definition sites**
-   (`Redis.ts:732`, `Connection.ts:26`) but they cause the **largest cascade**: ~85 `TS18046
-   'r' is unknown`, many `TS2345 typeof Redis not assignable`, and `TS2488 must have
-   [Symbol.iterator]` errors all stem from the two services no longer being valid yieldables.
-   Fixing these two definitions collapses a large fraction of the 262 core errors.
-3. **`Data.TaggedError`** (`RedisError.ts`) — compiled, but verify error/`Cause` semantics; the
-   200 test errors include `Cause`/`Exit` shape changes (Cause flattened tree→array in v4).
-4. **Renames / removed APIs.** CONFIDENCE VARIES — the *old* symbol is confirmed removed in
-   every case; the *replacement* is *not* a proven 1-for-1 unless marked ✅-verified. Verifying
-   each mapping requires actually applying it and compiling, which is blocked by the Schema +
-   Context.Tag cascades — i.e. it needs the full port. Do not treat this table as drop-in.
-   - `Schedule.union` (`Redis.ts:300`, `Cache.ts:254`): removed. Candidate `Schedule.both`
-     *exists* but signature equivalence UNVERIFIED.
-   - `Schedule.whileInput` (`Redis.ts:301`): removed. **Replacement UNKNOWN** — no `check` or
-     `whileInput` in v4 dist; needs investigation.
-   - `Stream.repeatEffectChunk` (`Redis.ts:325,371`): removed. Likely rebuild on
-     `Stream.fromPull`. UNVERIFIED.
-   - `Effect.timeoutFail` (`Redis.ts:557,565`): removed. Maps to `timeout`/`timeoutOrElse`
-     shape — NOT a rename, call shape changes. UNVERIFIED.
-   - `Effect.catchAll` (`Cache.ts:257`): removed. **There is NO bare `Effect.catch`** — the
-     catch family is `catchCause`/`catchFilter`/`catchTag`/`catchIf`/… Correct target UNKNOWN.
-   - `Effect.zipRight` (`Redis.ts:1019`): removed. `andThen` exists but is broader, not drop-in.
-   - `Layer.scoped` (`Redis.ts:1075`): removed. `Layer.effect` *exists* (scope implicit in v4);
-     equivalence UNVERIFIED.
-   - `ParseResult` top-level export (`Redis.ts:9`): removed. Likely under
-     `SchemaIssue`/`SchemaParser`. UNVERIFIED.
-   - `Duration.DurationInput` type path moved + `Duration.decode` removed — affects
-     `RedisCommand.ts` pervasively, but RedisCommand is otherwise pure string-building.
+The earlier draft of this doc listed mappings from migration blogs that did **not** survive contact
+with the compiler:
 
-## What was NOT done (honesty about coverage)
+- `Effect.catchAll → catch` — I'd marked "no bare `Effect.catch`"; it does exist (aliased).
+- `Schedule.whileInput → check` — there is no `check`; the answer is `tapInput`.
+- `Schedule.union → both` — **wrong**; it's `either`. `both` typechecks but is the wrong schedule
+  (max-delay intersection), so the reconnect test timed out until corrected to `either`.
 
-- **No compiling v4 build was produced** — the Schema and `Context.Tag` cascades block a clean
-  compile without the full port.
-- **The runtime test suite was NOT run against v4** (needs a working build + testcontainers).
-- The **replacement** API mappings above are matched by name/docs, not proven 1-for-1. The
-  only verified-clean files are `internal/decode.ts` and `RespValue.ts` (0 errors each).
-
-## Effort read
-
-- **Mechanical renames (items 4): ~half a day.** Safe, bounded, find/replace-scale.
-- **Services (item 2): ~half a day.** 2 definitions; collapses most of the cascade.
-- **Schema (item 1): the real cost, 1.5–3 days, and unstable** — the API moves between betas.
-  This is the part to defer until v4 RC.
-
-## Recommendation
-
-1. **Now:** keep this spike branch as the reference. Ship nothing.
-2. **At v4 RC:** redo on a fresh `feat/effect-v4` branch — fix items 2 and 4 first (cheap, high
-   cascade-collapse), then the Schema codecs. Lean on the Effect team's codemods for the renames.
-3. **Release as a redfx major** with `peerDependencies: { effect: "^4.0.0" }`; keep v3 on a
-   maintenance branch.
+Lesson: typecheck-green ≠ correct. The runtime suite is what caught the `both`/`either` bug.
 
 ## Reproduce / revert
 
-- Reproduce: this branch's `package.json` files pin `effect@4.0.0-beta.85` + a root
-  `pnpm.overrides.effect`. Run `pnpm install --no-frozen-lockfile && ./node_modules/.bin/tsc -p tsconfig.json --noEmit`.
+- Reproduce: `pnpm install --no-frozen-lockfile && ./node_modules/.bin/tsc -p tsconfig.json --noEmit && bun test test/`
 - Revert: `git checkout main` — `main` is untouched.

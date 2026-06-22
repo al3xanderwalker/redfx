@@ -3,9 +3,9 @@ import { Effect, Schema } from "effect";
 import * as fc from "fast-check";
 
 const OtpRecord = Schema.Struct({ codeHash: Schema.String, attempts: Schema.Number });
-const codec = Schema.parseJson(OtpRecord);
-const encode = Schema.encode(codec);
-const decode = Schema.decode(codec);
+const codec = Schema.fromJsonString(OtpRecord);
+const encode = Schema.encodeEffect(codec);
+const decode = Schema.decodeEffect(codec);
 
 test("Redis.ref codec round-trips through JSON", () => {
   fc.assert(

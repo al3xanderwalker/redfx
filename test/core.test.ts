@@ -12,7 +12,7 @@ import { Cause, Duration, Effect, Exit, Option, Ref, Stream } from "effect";
 // A fake in-memory driver, so these can inject failures the real adapters won't produce on cue.
 
 const failureTag = <A>(exit: Exit.Exit<A, RedisError>): RedisError | null =>
-  Exit.isFailure(exit) ? Option.getOrNull(Cause.failureOption(exit.cause)) : null;
+  Exit.isFailure(exit) ? Option.getOrNull(Cause.findErrorOption(exit.cause)) : null;
 
 test("commandTimeout fails a slow command with TimeoutError", async () => {
   const stalled: ConnectionService = {
@@ -63,7 +63,7 @@ test("pool invalidates a connection that fails with ConnectionError", async () =
         Effect.gen(function* () {
           const redis = yield* Redis;
           yield* redis.call("PING");
-          yield* Effect.either(redis.call("PING"));
+          yield* Effect.result(redis.call("PING"));
           yield* redis.call("PING");
         }),
         layer,

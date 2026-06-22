@@ -9,7 +9,7 @@ import { Config, Duration, Effect, Schema, Stream } from "effect";
 
 const OrderEvent = Schema.Struct({
   orderId: Schema.String,
-  kind: Schema.Literal("placed", "paid", "shipped"),
+  kind: Schema.Literals(["placed", "paid", "shipped"]),
   at: Schema.Number,
 });
 

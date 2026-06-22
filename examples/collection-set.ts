@@ -5,7 +5,7 @@ import { Redis } from "@redfx/core";
 import { IoRedis } from "@redfx/ioredis";
 import { Config, Duration, Effect, Schema } from "effect";
 
-const Tag = Schema.Literal("vip", "beta", "staff");
+const Tag = Schema.Literals(["vip", "beta", "staff"]);
 const userTags = Redis.setOf(Tag, { prefix: "user:tags", ttl: Duration.hours(24) });
 
 export const collectionSet = Effect.gen(function* () {

@@ -10,8 +10,7 @@ import {
 } from "@redfx/core";
 import {
   Cause,
-  Chunk,
-  type ConfigError,
+  type Config,
   Context,
   Duration,
   Effect,
@@ -26,13 +25,22 @@ import {
 } from "effect";
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers";
 
+// v4 removed `Effect.timeoutFail`; this restores the v3 data-last shape used across the suite.
+const timeoutFail =
+  <E>(opts: { readonly duration: Duration.Input; readonly onTimeout: () => E }) =>
+  <A, E2, R>(self: Effect.Effect<A, E2, R>): Effect.Effect<A, E | E2, R> =>
+    Effect.timeoutOrElse(self, {
+      duration: opts.duration,
+      orElse: () => Effect.fail(opts.onTimeout()),
+    });
+
 // Run against every adapter, so parity proves the ergonomic layer is driver-agnostic.
 export interface ConformanceAdapter {
   readonly name: string;
   readonly layer: (url: string) => Layer.Layer<Redis, RedisError>;
   readonly unreachableLayer: (url: string) => Layer.Layer<Redis, RedisError>;
   readonly pooledLayer: (url: string) => Layer.Layer<Redis, RedisError>;
-  readonly configLayer: (url: string) => Layer.Layer<Redis, RedisError | ConfigError.ConfigError>;
+  readonly configLayer: (url: string) => Layer.Layer<Redis, RedisError | Config.ConfigError>;
 }
 
 export const runConformance = (adapter: ConformanceAdapter) => {
@@ -60,7 +68,7 @@ export const runConformance = (adapter: ConformanceAdapter) => {
       Effect.runPromiseExit(Effect.provide(program, adapter.layer(url)));
 
     const failureTag = <A>(exit: Exit.Exit<A, RedisError>): RedisError | null =>
-      Exit.isFailure(exit) ? Option.getOrNull(Cause.failureOption(exit.cause)) : null;
+      Exit.isFailure(exit) ? Option.getOrNull(Cause.findErrorOption(exit.cause)) : null;
 
     test("get / set / getDelete are Option-typed", async () => {
       const result = await run(
@@ -249,20 +257,20 @@ export const runConformance = (adapter: ConformanceAdapter) => {
       const result = await run(
         Effect.gen(function* () {
           const redis = yield* Redis;
-          const fiber = yield* Redis.use((r) => r.subscribe("redfx:chan", Envelope)).pipe(
+          const fiber = yield* Redis.useStream((r) => r.subscribe("redfx:chan", Envelope)).pipe(
             Stream.filter((e) => e.topic === "wanted"),
             Stream.take(1),
             Stream.runCollect,
-            Effect.fork,
+            Effect.forkChild,
           );
-          const publisher = yield* Effect.fork(
+          const publisher = yield* Effect.forkChild(
             Effect.gen(function* () {
               yield* redis.publish("redfx:chan", JSON.stringify({ topic: "ignored", n: 1 }));
               yield* redis.publish("redfx:chan", JSON.stringify({ topic: "wanted", n: 42 }));
             }).pipe(Effect.delay(Duration.millis(100)), Effect.forever),
           );
           const received = yield* Fiber.join(fiber).pipe(
-            Effect.timeoutFail({
+            timeoutFail({
               duration: Duration.seconds(15),
               onTimeout: () => new CommandError({ message: "pub/sub timed out" }),
             }),
@@ -271,7 +279,7 @@ export const runConformance = (adapter: ConformanceAdapter) => {
           return received;
         }),
       );
-      expect(Chunk.toReadonlyArray(result)).toEqual([{ topic: "wanted", n: 42 }]);
+      expect(result).toEqual([{ topic: "wanted", n: 42 }]);
     });
 
     test("Lua script: EVALSHA with NOSCRIPT fallback", async () => {
@@ -370,14 +378,14 @@ export const runConformance = (adapter: ConformanceAdapter) => {
           const redis = yield* Redis;
           const fiber = yield* redis
             .subscribe("redfx:raw")
-            .pipe(Stream.take(1), Stream.runCollect, Effect.fork);
-          const publisher = yield* Effect.fork(
+            .pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
+          const publisher = yield* Effect.forkChild(
             redis
               .publish("redfx:raw", "plain-text")
               .pipe(Effect.delay(Duration.millis(100)), Effect.forever),
           );
           const received = yield* Fiber.join(fiber).pipe(
-            Effect.timeoutFail({
+            timeoutFail({
               duration: Duration.seconds(15),
               onTimeout: () => new CommandError({ message: "pub/sub timed out" }),
             }),
@@ -386,7 +394,7 @@ export const runConformance = (adapter: ConformanceAdapter) => {
           return received;
         }),
       );
-      expect(Chunk.toReadonlyArray(result)).toEqual(["plain-text"]);
+      expect(result).toEqual(["plain-text"]);
     });
 
     test("layerPooled: commands and pipeline work through the pool", async () => {
@@ -423,7 +431,9 @@ export const runConformance = (adapter: ConformanceAdapter) => {
     });
 
     test("layerPooled: recovers after a server-side connection kill", async () => {
-      const recover = Schedule.recurs(10).pipe(Schedule.addDelay(() => Duration.millis(100)));
+      const recover = Schedule.recurs(10).pipe(
+        Schedule.addDelay(() => Effect.succeed(Duration.millis(100))),
+      );
       const value = await Effect.runPromise(
         Effect.gen(function* () {
           const redis = yield* Redis;
@@ -466,7 +476,11 @@ export const runConformance = (adapter: ConformanceAdapter) => {
                 ? Effect.void
                 : Effect.fail(new CommandError({ message: "connection not released" })),
             ),
-            Effect.retry(Schedule.recurs(50).pipe(Schedule.addDelay(() => Duration.millis(100)))),
+            Effect.retry(
+              Schedule.recurs(50).pipe(
+                Schedule.addDelay(() => Effect.succeed(Duration.millis(100))),
+              ),
+            ),
           );
           return { before, during };
         }).pipe(Effect.provide(adapter.layer(url))),
@@ -490,7 +504,7 @@ export const runConformance = (adapter: ConformanceAdapter) => {
       );
       expect(Exit.isFailure(exit)).toBe(true);
       const tag = Exit.isFailure(exit)
-        ? Cause.failureOption(exit.cause).pipe(Option.map((e) => e._tag))
+        ? Cause.findErrorOption(exit.cause).pipe(Option.map((e) => e._tag))
         : Option.none();
       expect(tag).toEqual(Option.some("ConnectionError"));
     });
@@ -621,7 +635,7 @@ export const runConformance = (adapter: ConformanceAdapter) => {
             const warmA = yield* cacheA.get("k"); // origin runs once, warms L2 + A's L1
             const warmB = yield* cacheB.get("k"); // served from L2, warms B's L1, origin not re-run
             // Re-invalidate on a loop until B's listener has dropped its L1 (pub/sub is fire-and-forget).
-            const invalidator = yield* Effect.fork(
+            const invalidator = yield* Effect.forkChild(
               cacheA.invalidate("k").pipe(Effect.delay(Duration.millis(100)), Effect.forever),
             );
             const afterInvalidate = yield* cacheB.get("k").pipe(
@@ -631,7 +645,7 @@ export const runConformance = (adapter: ConformanceAdapter) => {
                   : Effect.fail(new CommandError({ message: "L1 not yet dropped" })),
               ),
               Effect.retry(Schedule.spaced(Duration.millis(100))),
-              Effect.timeoutFail({
+              timeoutFail({
                 duration: Duration.seconds(15),
                 onTimeout: () =>
                   new CommandError({ message: "cross-instance invalidation timed out" }),
@@ -1231,16 +1245,16 @@ export const runConformance = (adapter: ConformanceAdapter) => {
           const redis = yield* Redis;
           yield* redis.del("x:tail");
           const before = yield* connectedClients(redis);
-          const fiber = yield* Redis.use((r) =>
+          const fiber = yield* Redis.useStream((r) =>
             r.streams.read("x:tail", { from: "$", block: Duration.millis(200) }),
-          ).pipe(Stream.take(2), Stream.runCollect, Effect.fork);
-          const producer = yield* Effect.fork(
+          ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
+          const producer = yield* Effect.forkChild(
             redis
               .xadd("x:tail", { v: "x" })
               .pipe(Effect.delay(Duration.millis(100)), Effect.forever),
           );
           const received = yield* Fiber.join(fiber).pipe(
-            Effect.timeoutFail({
+            timeoutFail({
               duration: Duration.seconds(15),
               onTimeout: () => new CommandError({ message: "stream read timed out" }),
             }),
@@ -1252,9 +1266,13 @@ export const runConformance = (adapter: ConformanceAdapter) => {
                 ? Effect.void
                 : Effect.fail(new CommandError({ message: "dedicated connection not released" })),
             ),
-            Effect.retry(Schedule.recurs(50).pipe(Schedule.addDelay(() => Duration.millis(100)))),
+            Effect.retry(
+              Schedule.recurs(50).pipe(
+                Schedule.addDelay(() => Effect.succeed(Duration.millis(100))),
+              ),
+            ),
           );
-          return Chunk.toReadonlyArray(received).length;
+          return received.length;
         }),
       );
       expect(result).toBe(2);
@@ -1265,27 +1283,27 @@ export const runConformance = (adapter: ConformanceAdapter) => {
         Effect.gen(function* () {
           const redis = yield* Redis;
           yield* redis.del("x:gstream");
-          const fiber = yield* Redis.use((r) =>
+          const fiber = yield* Redis.useStream((r) =>
             r.streams.readGroup("x:gstream", {
               group: "g",
               consumer: "c",
               from: "0",
               block: Duration.millis(200),
             }),
-          ).pipe(Stream.take(1), Stream.runCollect, Effect.fork);
-          const producer = yield* Effect.fork(
+          ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
+          const producer = yield* Effect.forkChild(
             redis
               .xadd("x:gstream", { v: "hello" })
               .pipe(Effect.delay(Duration.millis(100)), Effect.forever),
           );
           const received = yield* Fiber.join(fiber).pipe(
-            Effect.timeoutFail({
+            timeoutFail({
               duration: Duration.seconds(15),
               onTimeout: () => new CommandError({ message: "group read timed out" }),
             }),
           );
           yield* Fiber.interrupt(producer);
-          const entry = Chunk.toReadonlyArray(received)[0];
+          const entry = received[0];
           const pendingBefore = yield* redis.xpending("x:gstream", "g");
           yield* entry?.ack ?? Effect.void;
           const pendingAfter = yield* redis.xpending("x:gstream", "g");
@@ -1330,26 +1348,26 @@ export const runConformance = (adapter: ConformanceAdapter) => {
           const redis = yield* Redis;
           yield* redis.del("x:reconnect");
           yield* redis.xadd("x:reconnect", { v: "a" });
-          const fiber = yield* Redis.use((r) =>
+          const fiber = yield* Redis.useStream((r) =>
             r.streams.read("x:reconnect", { from: "0", block: Duration.millis(100) }),
-          ).pipe(Stream.take(3), Stream.runCollect, Effect.fork);
+          ).pipe(Stream.take(3), Stream.runCollect, Effect.forkChild);
           // Let the consumer read "a" and advance its lastId, then drop its dedicated connection.
           // CLIENT KILL spares the caller (SKIPME defaults to yes), so only the consumer dies.
           yield* Effect.sleep(Duration.millis(500));
           yield* redis.call("CLIENT", "KILL", "TYPE", "normal").pipe(Effect.ignore);
           // Produce the rest only after the kill, so delivery proves the consumer reconnected.
           const retryWrite = Schedule.recurs(30).pipe(
-            Schedule.addDelay(() => Duration.millis(100)),
+            Schedule.addDelay(() => Effect.succeed(Duration.millis(100))),
           );
           yield* redis.xadd("x:reconnect", { v: "b" }).pipe(Effect.retry(retryWrite));
           yield* redis.xadd("x:reconnect", { v: "c" }).pipe(Effect.retry(retryWrite));
           const received = yield* Fiber.join(fiber).pipe(
-            Effect.timeoutFail({
+            timeoutFail({
               duration: Duration.seconds(25),
               onTimeout: () => new CommandError({ message: "reconnect read timed out" }),
             }),
           );
-          return Chunk.toReadonlyArray(received).map((e) => e.fields.v);
+          return received.map((e) => e.fields.v);
         }),
       );
       expect(result).toEqual(["a", "b", "c"]); // resumed past "a", no loss, no duplicate
@@ -1361,12 +1379,12 @@ export const runConformance = (adapter: ConformanceAdapter) => {
           const redis = yield* Redis;
           yield* redis.del("x:wrongtype");
           yield* redis.set("x:wrongtype", "i am a string");
-          return yield* Redis.use((r) =>
+          return yield* Redis.useStream((r) =>
             r.streams.read("x:wrongtype", { from: "0", block: Duration.millis(100) }),
           ).pipe(Stream.take(1), Stream.runCollect);
         }).pipe(
           // If a non-connection error were retried, this would loop until the deadline fires.
-          Effect.timeoutFail({
+          timeoutFail({
             duration: Duration.seconds(10),
             onTimeout: () =>
               new CommandError({ message: "stream read did not fail fast (looping?)" }),
@@ -1394,14 +1412,14 @@ export const runConformance = (adapter: ConformanceAdapter) => {
             .pipe(
               Stream.take(2),
               Stream.runCollect,
-              Effect.timeoutFail({
+              timeoutFail({
                 duration: Duration.seconds(15),
                 onTimeout: () => new CommandError({ message: "consume timed out" }),
               }),
             );
           const pending = yield* redis.xpending("stream:consume:c1", "g");
           return {
-            emitted: Chunk.toReadonlyArray(emitted).map((m) => m.n),
+            emitted: emitted.map((m) => m.n),
             handled: yield* Ref.get(handled),
             pendingCount: pending.count,
           };
@@ -1424,7 +1442,7 @@ export const runConformance = (adapter: ConformanceAdapter) => {
             .group({ group: "g", consumer: "c", from: "0", block: Duration.millis(200) })
             .pipe(
               Stream.runHead,
-              Effect.timeoutFail({
+              timeoutFail({
                 duration: Duration.seconds(15),
                 onTimeout: () => new CommandError({ message: "group read timed out" }),
               }),
