@@ -25,7 +25,6 @@ import {
 } from "effect";
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers";
 
-// v4 removed `Effect.timeoutFail`; this restores the v3 data-last shape used across the suite.
 const timeoutFail =
   <E>(opts: { readonly duration: Duration.Input; readonly onTimeout: () => E }) =>
   <A, E2, R>(self: Effect.Effect<A, E2, R>): Effect.Effect<A, E | E2, R> =>

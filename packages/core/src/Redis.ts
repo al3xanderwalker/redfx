@@ -297,8 +297,6 @@ const isBusyGroup = (e: RedisError): boolean =>
 const reconnectSchedule = Schedule.exponential("200 millis").pipe(
   Schedule.jittered,
   Schedule.either(Schedule.spaced("30 seconds")),
-  // v4 has no `whileInput`: halt the schedule (via its Error channel) when the failure isn't a
-  // ConnectionError, so command/decode errors (WRONGTYPE, NOGROUP, a poison entry) surface, not loop.
   Schedule.tapInput((e: RedisError) =>
     e._tag === "ConnectionError" ? Effect.void : Effect.fail(e),
   ),
@@ -325,8 +323,6 @@ const makeRedis = (conn: ConnectionService): RedisService => {
       const block = consumerBlock(options?.block);
       const seed = options?.from ?? "$";
       const pump = (c: ConnectionService, lastIdRef: Ref.Ref<string>) =>
-        // v4 has no `repeatEffectChunk`: `forever` re-runs the per-read stream; the XREAD BLOCK
-        // inside the effect is what paces the loop, so this never busy-spins on empty reads.
         Stream.forever(
           Stream.fromArrayEffect(
             Ref.get(lastIdRef).pipe(
@@ -1068,8 +1064,7 @@ export namespace Redis {
       });
   };
 
-  /** Open a `Stream` from the `Redis` service, e.g. `Redis.useStream((r) => r.subscribe(ch, Schema))`.
-   *  Named `useStream` (not `use`) because v4's `Context.Service` reserves `.use` for `Effect`s. */
+  /** Open a `Stream` from the `Redis` service, e.g. `Redis.useStream((r) => r.subscribe(ch, Schema))`. */
   export const useStream = <A, E, R>(
     f: (redis: RedisService) => Stream.Stream<A, E, R>,
   ): Stream.Stream<A, E, R | Redis> => Stream.unwrap(Effect.map(Redis, f));

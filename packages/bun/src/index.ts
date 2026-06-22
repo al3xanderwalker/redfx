@@ -94,8 +94,6 @@ const pipeline =
 const subscribeStream =
   (config: ClientConfig) =>
   (channels: ReadonlyArray<string>): Stream.Stream<PushMessage, RedisError> =>
-    // v4 has no `asyncScoped`: `Stream.callback` hands us a Queue; push with the unsafe (sync) ops
-    // since bun's pub/sub callbacks aren't Effects.
     Stream.callback<PushMessage, RedisError>((queue) =>
       Effect.gen(function* () {
         const sub = yield* makeClient(config);

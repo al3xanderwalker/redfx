@@ -176,9 +176,6 @@ const pipeline =
 const subscribeStream =
   (acquire: Effect.Effect<RedisLike, ConnectionError, Scope.Scope>) =>
   (channels: ReadonlyArray<string>): Stream.Stream<PushMessage, RedisError> =>
-    // v4 has no `asyncScoped`: `Stream.callback` hands us a Queue; push with the unsafe (sync) ops
-    // since ioredis' event callbacks aren't Effects. The stream provides the Scope `acquire` needs,
-    // so the subscriber connection closes when the consumer's scope does.
     Stream.callback<PushMessage, RedisError>((queue) =>
       Effect.gen(function* () {
         const sub = yield* acquire;
