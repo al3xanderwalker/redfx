@@ -57,8 +57,7 @@ npm install @redfx/core@beta @redfx/ioredis@beta ioredis effect@beta   # Node + 
 bun add @redfx/core@beta @redfx/bun@beta effect@beta                    # Bun
 ```
 
-Tested against `effect@4.0.0-beta.85`; pin it in your lockfile, since `@beta` is a moving tag. See
-[docs/effect-v4.md](docs/effect-v4.md) for the full migration and release notes.
+Tested against `effect@4.0.0-beta.85`; pin it in your lockfile, since `@beta` is a moving tag.
 
 ## Usage
 
