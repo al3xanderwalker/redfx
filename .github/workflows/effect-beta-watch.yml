@@ -1,0 +1,37 @@
+name: effect-beta-watch
+
+# Canary for the Effect-v4 line. The published v4 packages peer-range `effect: ^4.0.0-beta.85`,
+# which accepts newer betas — so a future beta could install cleanly and break us at runtime.
+# This re-runs the full suite against whatever `effect@beta` currently resolves to, on a schedule,
+# so WE find that out (loud failure = bump the peer floor / re-port) before users do.
+#
+# NOTE: GitHub only fires `schedule` for workflows on the repository's DEFAULT branch. While `main`
+# is still the v3 line, the cron will not auto-run from the `v4` branch — use the manual
+# `workflow_dispatch` button until v4 becomes the default branch at Effect v4 GA.
+on:
+  schedule:
+    - cron: "0 9 * * 1" # Mondays 09:00 UTC
+  workflow_dispatch:
+
+jobs:
+  test-latest-beta:
+    runs-on: ubuntu-latest # Docker is available, so testcontainers works
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3"
+      - name: Pin the workspace to the current effect@beta
+        run: |
+          BETA="$(npm view effect@beta version)"
+          echo "Testing redfx against effect@$BETA"
+          pnpm pkg set "pnpm.overrides.effect=$BETA"
+          pnpm install --no-frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm build
+      - run: pnpm test

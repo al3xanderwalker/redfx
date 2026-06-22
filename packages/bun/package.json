@@ -1,6 +1,6 @@
 {
   "name": "@redfx/bun",
-  "version": "1.0.0",
+  "version": "2.0.0-beta.0",
   "description": "Bun driver adapter for redfx: the send-level port over Bun's native RedisClient, with pub/sub as a Stream.",
   "license": "MIT",
   "author": "Alex Walker",
@@ -37,7 +37,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "peerDependencies": {
-    "effect": "^3.21.0",
+    "effect": "^4.0.0-beta.85",
     "@redfx/core": "workspace:^"
   },
   "devDependencies": {

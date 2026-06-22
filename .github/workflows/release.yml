@@ -23,6 +23,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - run: pnpm -r publish --access public --no-git-checks
+      # Prereleases (the Effect-v4 line, 2.0.0-beta.x) publish to the `beta` dist-tag; stable
+      # releases (the v3 line, 1.x) go to `latest`. Without this, npm tags every publish `latest`
+      # by default — a beta would clobber the v3 `latest` that existing installs resolve to.
+      - run: pnpm -r publish --access public --no-git-checks --tag ${{ github.event.release.prerelease && 'beta' || 'latest' }}
         env:
           NPM_CONFIG_PROVENANCE: "true" # auth is OIDC (trusted publishing); no token needed

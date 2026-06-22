@@ -1,7 +1,7 @@
 # Effect v4 port — verified
 
-> Branch: `spike/effect-v4`. This started as a throwaway probe; it is now a **complete, verified
-> port** of redfx to `effect@4.0.0-beta.85`. `main` is untouched.
+> Branch: `v4`. This started as a throwaway probe; it is now a **complete, verified port** of redfx
+> to `effect@4.0.0-beta.85`, packaged for release on the `beta` dist-tag. `main` stays the v3 line.
 
 ## Result
 
@@ -86,7 +86,42 @@ with the compiler:
 
 Lesson: typecheck-green ≠ correct. The runtime suite is what caught the `both`/`either` bug.
 
+## Release & install
+
+The v3 and v4 lines ship as the same package names on **different npm dist-tags + majors**, so they
+coexist and a consumer's installed `effect` major selects the right one:
+
+| line | redfx | dist-tag | peer |
+| --- | --- | --- | --- |
+| v3 (current) | `1.x` | `latest` | `effect@^3.21` |
+| v4 (now, beta) | `2.0.0-beta.x` | `beta` | `effect@^4.0.0-beta.85` |
+| v4 (after Effect v4 GA) | `2.x` | `latest` | `effect@^4` |
+
+Install: `npm i @redfx/core@beta @redfx/ioredis@beta effect@beta` (v3 users on `latest` are untouched).
+
+### Why the peer is a range, not an exact pin
+
+`peerDependencies.effect` is `^4.0.0-beta.85`, not `4.0.0-beta.85`. An exact pin would make redfx
+*uninstallable-clean* the moment Effect ships its next beta: under npm the mismatch is a hard
+`ERESOLVE` failure, under pnpm/yarn a warning that installs a mismatched beta anyway. The caret range
+accepts later `4.0.0` betas **and** stable `4.0.0` (verified via semver), but **not** `4.1.0-beta`.
+Reproducibility is the consumer's lockfile's job, plus the "tested against beta.85" note — not the
+peer range. See the conversation in this file's history for the verified semver matrix.
+
+### Wiring (done on this branch)
+
+- `package.json` ×3: version `2.0.0-beta.0`, peer `effect@^4.0.0-beta.85` (adapters' `@redfx/core`
+  peer is `workspace:^` → rewrites to `^2.0.0-beta.0` on publish).
+- `.github/workflows/release.yml`: publishes prereleases to `--tag beta`, stable to `latest`
+  (npm tags every publish `latest` by default — a beta would otherwise clobber the v3 `latest`).
+- `.github/workflows/effect-beta-watch.yml`: scheduled canary re-running the suite against the
+  current `effect@beta`, so beta drift surfaces as a loud CI failure (`workflow_dispatch` works now;
+  the `schedule` only auto-fires once `v4` is the repo's default branch — a GitHub constraint).
+
+The one remaining manual step is publishing: bump `2.0.0-beta.N`, cut a GitHub **pre-release**, and
+the workflow does the rest. Hold the *stable* `2.0.0`/`latest` promotion until Effect v4 itself GAs.
+
 ## Reproduce / revert
 
 - Reproduce: `pnpm install --no-frozen-lockfile && ./node_modules/.bin/tsc -p tsconfig.json --noEmit && bun test test/`
-- Revert: `git checkout main` — `main` is untouched.
+- Revert: `git checkout main` — `main` is the untouched v3 line.

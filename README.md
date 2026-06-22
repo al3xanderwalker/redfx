@@ -44,7 +44,21 @@ npm install @redfx/core @redfx/ioredis ioredis effect   # Node + ioredis
 bun add @redfx/core @redfx/bun effect                    # Bun
 ```
 
-`effect` is a peer dependency (`^3.21`).
+`effect` is a peer dependency (`^3.21`). This is the current stable line (redfx `1.x`).
+
+### Effect v4 (beta)
+
+A v4-compatible line is published under the `beta` dist-tag — redfx `2.x`, peer `effect@^4.0.0-beta`.
+Effect v4 is itself still beta, so this line is too; the two lines are independent npm dist-tags, so
+v3 users on `latest` are unaffected.
+
+```sh
+npm install @redfx/core@beta @redfx/ioredis@beta ioredis effect@beta   # Node + ioredis
+bun add @redfx/core@beta @redfx/bun@beta effect@beta                    # Bun
+```
+
+Tested against `effect@4.0.0-beta.85`; pin it in your lockfile, since `@beta` is a moving tag. See
+[docs/effect-v4.md](docs/effect-v4.md) for the full migration and release notes.
 
 ## Usage
 
